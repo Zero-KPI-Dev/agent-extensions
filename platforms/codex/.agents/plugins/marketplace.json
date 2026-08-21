@@ -1,0 +1,20 @@
+{
+  "name": "zero-kpi-dev",
+  "interface": {
+    "displayName": "Zero KPI Dev"
+  },
+  "plugins": [
+    {
+      "name": "feishu-pr-review",
+      "source": {
+        "source": "local",
+        "path": "./plugins/feishu-pr-review"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

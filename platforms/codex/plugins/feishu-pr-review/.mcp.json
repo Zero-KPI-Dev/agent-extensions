@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "feishu-pr-review": {
+      "command": "python3",
+      "args": [
+        "./server/mcp_server.py"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "FEISHU_PR_REVIEW_CONFIG",
+        "HOME",
+        "PATH"
+      ]
+    }
+  }
+}

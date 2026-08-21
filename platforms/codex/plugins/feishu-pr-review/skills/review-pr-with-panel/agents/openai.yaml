@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR 检视专家团"
+  short_description: "低成本双 Agent 首检、定向复检与 GitHub 意见去重"
+  default_prompt: "Use $review-pr-with-panel to review this change, reusing prior findings for a focused low-token recheck when applicable."

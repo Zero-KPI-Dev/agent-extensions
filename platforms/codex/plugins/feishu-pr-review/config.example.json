@@ -1,0 +1,36 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8787,
+  "default_bot": "pr-review",
+  "bots": {
+    "pr-review": {
+      "display_name": "PR 检视机器人",
+      "event_path": "/feishu/events/pr-review",
+      "transport": "long_connection",
+      "feishu_base_url": "https://open.feishu.cn",
+      "app_id": "cli_replace_me",
+      "app_secret": "replace_me",
+      "verification_token": "",
+      "bot_open_id": "",
+      "require_mention": true,
+      "enabled": true
+    }
+  },
+  "codex_binary": "codex",
+  "codex_runner": "app_server",
+  "codex_app_server_transport": "shared_unix",
+  "codex_app_server_socket": "~/.codex/app-server-control/app-server-control.sock",
+  "codex_sandbox": "read-only",
+  "codex_approval_policy": "on-request",
+  "codex_approvals_reviewer": "auto_review",
+  "max_concurrent_jobs": 4,
+  "job_timeout_seconds": 7200,
+  "max_feishu_text_length": 3500,
+  "feishu_result_format": "card",
+  "state_dir": "~/Library/Application Support/Codex/feishu-pr-review",
+  "app_server_launchd_label": "com.openai.codex.feishu-pr-review.app-server",
+  "default_repo": "owner/repo",
+  "repo_roots": {
+    "owner/repo": "~/Workspaces/your-repository"
+  }
+}

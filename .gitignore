@@ -1,0 +1,34 @@
+.DS_Store
+Thumbs.db
+
+# Python and local environments
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.venv/
+**/venv/
+
+# Runtime configuration and secrets
+**/.env
+**/.env.*
+!**/.env.example
+**/config.json
+!**/config.example.json
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Runtime state and logs
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-shm
+**/*.sqlite-wal
+**/logs/
+**/*.log
+**/*.pid
+**/*.sock
+
+# Local IDE state
+.idea/
+.vscode/

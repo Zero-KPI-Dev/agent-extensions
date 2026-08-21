@@ -1,0 +1,19 @@
+{
+  "name": "feishu-pr-review",
+  "version": "0.1.0+codex.20260821063657",
+  "description": "\u5728\u98de\u4e66\u4e2d\u89e6\u53d1\u672c\u673a Codex \u7684\u5f02\u6b65 GitHub PR \u68c0\u89c6\uff0c\u5e76\u56de\u4f20\u7ed3\u679c\u3002",
+  "author": {
+    "name": "Zero-KPI-Dev"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Feishu PR Review",
+    "shortDescription": "\u4ece\u98de\u4e66\u89e6\u53d1\u672c\u673a Codex \u7684\u5f02\u6b65 PR \u68c0\u89c6\u3002",
+    "longDescription": "\u672c\u63d2\u4ef6\u63d0\u4f9b\u672c\u673a\u98de\u4e66\u7f51\u5173\u3001\u6301\u4e45\u5316\u4efb\u52a1\u961f\u5217\u548c MCP \u7ba1\u7406\u5de5\u5177\uff1bPR \u68c0\u89c6\u7531 review-pr-with-panel Skill \u6267\u884c\uff0c\u5e76\u6309 Skill \u89c4\u5219\u53d1\u5e03 GitHub \u610f\u89c1\u3002",
+    "developerName": "Zero-KPI-Dev",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "\u68c0\u67e5\u98de\u4e66 PR \u68c0\u89c6\u7f51\u5173\u72b6\u6001\uff0c\u6216\u63d0\u4ea4\u3001\u67e5\u8be2\u3001\u53d6\u6d88\u548c\u91cd\u8bd5\u4e00\u4e2a\u672c\u5730 PR \u68c0\u89c6\u4efb\u52a1\u3002"
+  },
+  "mcpServers": "./.mcp.json"
+}

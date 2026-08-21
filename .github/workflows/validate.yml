@@ -1,0 +1,27 @@
+name: Validate extensions
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate repository and secrets boundary
+        run: python3 scripts/validate_repository.py
+      - name: Test Feishu PR Review gateway
+        working-directory: platforms/codex/plugins/feishu-pr-review
+        run: python3 -m unittest discover -s tests
+      - name: Test bundled review skill
+        working-directory: platforms/codex/plugins/feishu-pr-review/skills/review-pr-with-panel
+        run: python3 -m unittest discover -s tests
