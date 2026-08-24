@@ -36,8 +36,11 @@ class SkillPolicyContractTests(unittest.TestCase):
         self.assertIn("finding-level 状态为 `DISPUTED`", contract)
         self.assertIn("顶层报告状态映射为 `DISPUTED_OPEN`", contract)
         self.assertIn("## `A_RECHECK` 状态转移表", contract)
-        self.assertIn("| `REJECT_WITH_EVIDENCE` | `false` | 必填 |", contract)
-        self.assertIn("| `WITHDRAW` | `true` | 必填 |", contract)
+        self.assertIn(
+            "| `REJECT_WITH_EVIDENCE` | `CONFIRMED` / `PARTIALLY_CONFIRMED` | `false` | 必填 |",
+            contract,
+        )
+        self.assertIn("| `WITHDRAW` | `REJECTED` | `true` | 必填 |", contract)
         self.assertIn("`DISPUTED`、`DISPUTED_OPEN`", publish)
         self.assertNotIn("三轮后仍冲突：`FINAL_BY_A`", contract)
 

@@ -33,11 +33,31 @@ SEVERITY_DECISIONS = {
     "UNDETERMINED",
 }
 A_RECHECK_RULES = {
-    "ACCEPT": {"consensus": True, "final_position": "forbidden"},
-    "PARTIAL_ACCEPT": {"consensus": False, "final_position": "required"},
-    "REJECT_WITH_EVIDENCE": {"consensus": False, "final_position": "required"},
-    "NEED_MORE_EVIDENCE": {"consensus": False, "final_position": "forbidden"},
-    "WITHDRAW": {"consensus": True, "final_position": "required"},
+    "ACCEPT": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": True,
+        "final_position": "forbidden",
+    },
+    "PARTIAL_ACCEPT": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": False,
+        "final_position": "required",
+    },
+    "REJECT_WITH_EVIDENCE": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": False,
+        "final_position": "required",
+    },
+    "NEED_MORE_EVIDENCE": {
+        "validities": {"INSUFFICIENT_EVIDENCE"},
+        "consensus": False,
+        "final_position": "forbidden",
+    },
+    "WITHDRAW": {
+        "validities": {"REJECTED"},
+        "consensus": True,
+        "final_position": "required",
+    },
 }
 RESPONSES = set(A_RECHECK_RULES)
 FIX_STATUSES = {
@@ -200,6 +220,13 @@ def validate(packet: dict) -> list[str]:
             response = item.get("response")
             require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
             response_rule = A_RECHECK_RULES.get(response)
+            if response_rule is not None:
+                allowed_validities = response_rule["validities"]
+                require(
+                    item.get("current_validity") in allowed_validities,
+                    f"{prefix}.current_validity must be {' or '.join(sorted(allowed_validities))} for {response}",
+                    errors,
+                )
             if response_rule is not None and isinstance(consensus, bool):
                 expected_consensus = response_rule["consensus"]
                 require(
