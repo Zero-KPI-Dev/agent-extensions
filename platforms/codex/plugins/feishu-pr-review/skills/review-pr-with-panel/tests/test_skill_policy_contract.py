@@ -21,6 +21,8 @@ class SkillPolicyContractTests(unittest.TestCase):
         for forbidden in ("`terra/medium`", "`luna/medium`", "`luna/high`"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, policy)
+        self.assertNotIn("当前父模型 `high`", policy)
+        self.assertIn("父配置的 effective 模型与推理强度已确认满足上述下限", policy)
 
     def test_agent_a_final_position_terminates_stable_initial_disagreement(self) -> None:
         skill = _read("SKILL.md")
@@ -47,6 +49,11 @@ class SkillPolicyContractTests(unittest.TestCase):
         self.assertIn("AUTO_AFTER_PANEL_DECISION", report)
         self.assertIn("AUTO_AFTER_PANEL_DECISION", contract)
         self.assertIn("设为 `AUTO_AFTER_PANEL_DECISION`", publish)
+        finding_status_line = next(
+            line for line in report.splitlines() if line.startswith("| 当前状态 |")
+        )
+        self.assertIn("DISPUTED", finding_status_line)
+        self.assertNotIn("DISPUTED_OPEN", finding_status_line)
         self.assertNotIn(
             "结论只有 `DISPUTED`、`FINAL_BY_A` 或证据不足",
             publish,

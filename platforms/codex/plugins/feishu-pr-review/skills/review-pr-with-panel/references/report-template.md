@@ -77,7 +77,7 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 | 字段 | 内容 |
 |---|---|
-| 当前状态 | `{{OPEN | FIXED_VERIFIED | PARTIALLY_FIXED | NOT_FIXED | UNVERIFIABLE | OBSOLETE | FINAL_BY_A | DISPUTED | DISPUTED_OPEN}}` |
+| 当前状态 | `{{OPEN | FIXED_VERIFIED | PARTIALLY_FIXED | NOT_FIXED | UNVERIFIABLE | OBSOLETE | FINAL_BY_A | DISPUTED}}` |
 | Revision | `{{revision}}` |
 | 位置 | [`{{path}}:{{line}}`]({{github_permalink}}) |
 | 置信度 | `{{high | medium | low}}` |

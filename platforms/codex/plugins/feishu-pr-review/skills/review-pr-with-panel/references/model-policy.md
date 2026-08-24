@@ -67,15 +67,17 @@ A/B prompt 必须自包含仓库、范围、base/head、run context、证据包�
 
 只使用当前子 Agent 工具明确公布的模型和推理强度组合。降级时优先选择仍满足质量下限的可用组合，不为了保留同一模型而跌破该模型的推理下限：
 
-- A `sol/ultra` → `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
-- A `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
-- A `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
-- A `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
-- A `terra/xhigh` → `terra/max` → `sol/high` → 当前父模型 `high`；
-- B `luna/max` → `luna/xhigh` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
-- B `luna/xhigh` → `luna/max` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
-- B `terra/max` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
-- B `terra/xhigh` → `terra/max` → `sol/high` → 当前父模型 `high`。
+- A `sol/ultra` → `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → `STOP_UNAVAILABLE`；
+- A `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → `STOP_UNAVAILABLE`；
+- A `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → `STOP_UNAVAILABLE`；
+- A `sol/high` → `terra/max` → `terra/xhigh` → `STOP_UNAVAILABLE`；
+- A `terra/xhigh` → `terra/max` → `sol/high` → `STOP_UNAVAILABLE`；
+- B `luna/max` → `luna/xhigh` → `terra/xhigh` → `sol/high` → `STOP_UNAVAILABLE`；
+- B `luna/xhigh` → `luna/max` → `terra/xhigh` → `sol/high` → `STOP_UNAVAILABLE`；
+- B `terra/max` → `terra/xhigh` → `sol/high` → `STOP_UNAVAILABLE`；
+- B `terra/xhigh` → `terra/max` → `sol/high` → `STOP_UNAVAILABLE`。
+
+只有父配置的 effective 模型与推理强度已确认满足上述下限，才允许把它作为 `STOP_UNAVAILABLE` 前的额外候选；父配置未知、仅知道 reasoning 名称，或低于任一对应下限时都必须停止并报告不可用。不得把“继承父配置”写成无条件降级终点。
 
 若显式组合被运行时拒绝：
 
