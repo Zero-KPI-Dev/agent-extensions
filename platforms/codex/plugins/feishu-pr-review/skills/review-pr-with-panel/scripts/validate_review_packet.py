@@ -198,7 +198,7 @@ def validate(packet: dict) -> list[str]:
             consensus = item.get("consensus")
             response = item.get("response")
             require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
-            requires_final_position = response == "WITHDRAW" or (
+            requires_final_position = response in {"REJECT_WITH_EVIDENCE", "WITHDRAW"} or (
                 consensus is False and response != "NEED_MORE_EVIDENCE"
             )
             if requires_final_position:

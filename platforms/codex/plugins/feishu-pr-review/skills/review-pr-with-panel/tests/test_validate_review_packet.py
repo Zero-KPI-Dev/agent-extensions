@@ -181,6 +181,19 @@ class AgentAFinalPositionTests(unittest.TestCase):
             any("final_technical_position is required" in error for error in errors)
         )
 
+    def test_consensus_rejection_still_requires_final_position(self) -> None:
+        errors = validate(
+            self.packet(
+                response="REJECT_WITH_EVIDENCE",
+                final_position=None,
+                consensus=True,
+            )
+        )
+
+        self.assertTrue(
+            any("final_technical_position is required" in error for error in errors)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
