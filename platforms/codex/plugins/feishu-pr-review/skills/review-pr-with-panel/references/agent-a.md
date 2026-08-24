@@ -46,13 +46,13 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。A 可以在启动�
 
 首次或增量新 finding 返回 `A_RECHECK`：
 
-- `ACCEPT`：完整接受。
-- `PARTIAL_ACCEPT`：接受部分并更新 revision。
-- `REJECT_WITH_EVIDENCE`：用新证据拒绝，不能重复原主张。
-- `NEED_MORE_EVIDENCE`：说明缺口和最小验证动作。
-- `WITHDRAW`：撤回原 finding。
+- `ACCEPT`：完整接受 B 对当前 finding 的结论；`consensus=true`，`final_technical_position` 留空。
+- `PARTIAL_ACCEPT`：接受部分并更新 revision，但仍保留技术分歧；`consensus=false`，必须填写 `final_technical_position`。
+- `REJECT_WITH_EVIDENCE`：用新证据拒绝，不能重复原主张；`consensus=false`，必须填写 `final_technical_position`。
+- `NEED_MORE_EVIDENCE`：说明缺口和最小验证动作；`consensus=false`，`final_technical_position` 留空。
+- `WITHDRAW`：撤回原 finding；`consensus=true`，并填写 `final_technical_position` 记录撤回依据。
 
-当 A 选择 `REJECT_WITH_EVIDENCE` 或在回应 B 后维持自己的 finding 时，必须逐条回应 B 的最强反证，提供新的或重新定位的直接证据，并填写 `final_technical_position`。如果 B 没有新的实质证据，该立场是首次检视的终审输入；A 不得用重复原主张代替回应，也不得因终审权跳过反证。
+当 A 选择 `PARTIAL_ACCEPT`、`REJECT_WITH_EVIDENCE` 或在回应 B 后维持自己的 finding 时，必须逐条回应 B 的最强反证，提供新的或重新定位的直接证据，并填写 `final_technical_position`。如果 B 没有新的实质证据，该立场是首次检视的终审输入；A 不得用重复原主张代替回应，也不得因终审权跳过反证。不要自行组合 response、consensus 与最终立场；严格遵循检视契约中的 `A_RECHECK` 状态转移表。
 
 只有 Leader 因实质分歧再次调用时才返回 `A_FIX_RECHECK`：
 

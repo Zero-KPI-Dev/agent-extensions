@@ -801,14 +801,14 @@ def build_review_card(report: str, pr_url: str | None = None, max_length: int = 
         outcome = "❌ **检视未完成，请查看下方失败原因**"
     elif is_cancelled:
         outcome = "⏹️ **检视任务已取消**"
+    elif normalized_conclusion == "FINAL_BY_A":
+        outcome = "⚠️ **存在 A 终审确认的待处理问题；请查看 B 异议披露**"
     elif total_findings:
         outcome = f"⚠️ **共发现 {total_findings} 个待处理问题，最高级别 {highest_severity}**"
     elif is_clean_conclusion and is_follow_up:
         outcome = "✅ **历史问题已验证修复，本轮无待处理意见**"
     elif is_clean_conclusion:
         outcome = "✅ **未发现待处理问题**"
-    elif normalized_conclusion == "FINAL_BY_A":
-        outcome = "⚠️ **存在 A 终审确认的待处理问题；请查看 B 异议披露**"
     elif data["findings"]:
         outcome = "⚠️ **发现待处理问题，但摘要未提供严重级别统计**"
     elif is_follow_up:

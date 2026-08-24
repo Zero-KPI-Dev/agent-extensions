@@ -194,6 +194,50 @@ class AgentAFinalPositionTests(unittest.TestCase):
             any("final_technical_position is required" in error for error in errors)
         )
 
+    def test_response_consensus_transition_table(self) -> None:
+        cases = {
+            "ACCEPT": (True, None),
+            "PARTIAL_ACCEPT": (False, "A accepts only the severity adjustment."),
+            "REJECT_WITH_EVIDENCE": (False, "The rebuttal path is unreachable."),
+            "NEED_MORE_EVIDENCE": (False, None),
+            "WITHDRAW": (True, "B's rebuttal invalidates the original finding."),
+        }
+
+        for response, (expected_consensus, final_position) in cases.items():
+            with self.subTest(response=response, expected="valid"):
+                self.assertEqual(
+                    validate(
+                        self.packet(
+                            response=response,
+                            final_position=final_position,
+                            consensus=expected_consensus,
+                        )
+                    ),
+                    [],
+                )
+            with self.subTest(response=response, expected="invalid_consensus"):
+                errors = validate(
+                    self.packet(
+                        response=response,
+                        final_position=final_position or "Not a valid final position here.",
+                        consensus=not expected_consensus,
+                    )
+                )
+                self.assertTrue(any("consensus must be" in error for error in errors))
+
+    def test_accept_cannot_carry_a_non_consensus_final_position(self) -> None:
+        errors = validate(
+            self.packet(
+                response="ACCEPT",
+                final_position="This field would contradict an agreed acceptance.",
+                consensus=True,
+            )
+        )
+
+        self.assertTrue(
+            any("final_technical_position must be empty" in error for error in errors)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

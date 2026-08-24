@@ -187,7 +187,19 @@ A 复查包：
 }
 ```
 
-当 A 决定维持或撤回 finding 并结束当前分歧时，`A_RECHECK` response 必须填写 `final_technical_position`；不能等到固定轮次才给出终审立场。`NEED_MORE_EVIDENCE` 不得伪装成最终立场。
+## `A_RECHECK` 状态转移表
+
+response、consensus 与 final_technical_position 是一个不可拆分的状态机，不得自由组合：
+
+| response | consensus | final_technical_position | Leader 收束方向 |
+| --- | --- | --- | --- |
+| `ACCEPT` | `true` | 必须为空 | `AGREED` |
+| `PARTIAL_ACCEPT` | `false` | 必填 | 无新实质证据时 `FINAL_BY_A`；否则 `DISPUTED` |
+| `REJECT_WITH_EVIDENCE` | `false` | 必填 | 无新实质证据时 `FINAL_BY_A`；否则 `DISPUTED` |
+| `NEED_MORE_EVIDENCE` | `false` | 必须为空 | `DISPUTED`，完成最小补证后再继续 |
+| `WITHDRAW` | `true` | 必填 | `CLOSED_REJECTED`；最终立场记录撤回依据 |
+
+当 A 决定维持或撤回 finding 并结束当前分歧时，`A_RECHECK` response 必须填写 `final_technical_position`；不能等到固定轮次才给出终审立场。`NEED_MORE_EVIDENCE` 不得伪装成最终立场。`ACCEPT` 与 `WITHDRAW` 表示双方已就该 finding 的处置达成一致；`PARTIAL_ACCEPT` 与 `REJECT_WITH_EVIDENCE` 表示 A 仍保留自己的最终技术立场，因此必须保持 `consensus=false`。
 
 ## 共识与结束
 

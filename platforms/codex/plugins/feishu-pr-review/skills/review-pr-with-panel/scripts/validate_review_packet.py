@@ -32,13 +32,14 @@ SEVERITY_DECISIONS = {
     "NOT_APPLICABLE",
     "UNDETERMINED",
 }
-RESPONSES = {
-    "ACCEPT",
-    "PARTIAL_ACCEPT",
-    "REJECT_WITH_EVIDENCE",
-    "NEED_MORE_EVIDENCE",
-    "WITHDRAW",
+A_RECHECK_RULES = {
+    "ACCEPT": {"consensus": True, "final_position": "forbidden"},
+    "PARTIAL_ACCEPT": {"consensus": False, "final_position": "required"},
+    "REJECT_WITH_EVIDENCE": {"consensus": False, "final_position": "required"},
+    "NEED_MORE_EVIDENCE": {"consensus": False, "final_position": "forbidden"},
+    "WITHDRAW": {"consensus": True, "final_position": "required"},
 }
+RESPONSES = set(A_RECHECK_RULES)
 FIX_STATUSES = {
     "FIXED_VERIFIED",
     "PARTIALLY_FIXED",
@@ -198,19 +199,24 @@ def validate(packet: dict) -> list[str]:
             consensus = item.get("consensus")
             response = item.get("response")
             require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
-            requires_final_position = response in {"REJECT_WITH_EVIDENCE", "WITHDRAW"} or (
-                consensus is False and response != "NEED_MORE_EVIDENCE"
-            )
-            if requires_final_position:
+            response_rule = A_RECHECK_RULES.get(response)
+            if response_rule is not None and isinstance(consensus, bool):
+                expected_consensus = response_rule["consensus"]
+                require(
+                    consensus is expected_consensus,
+                    f"{prefix}.consensus must be {str(expected_consensus).lower()} for {response}",
+                    errors,
+                )
+            if response_rule is not None and response_rule["final_position"] == "required":
                 require(
                     bool(item.get("final_technical_position")),
                     f"{prefix}.final_technical_position is required for a definitive response or withdrawal",
                     errors,
                 )
-            if response == "NEED_MORE_EVIDENCE":
+            elif response_rule is not None:
                 require(
                     not item.get("final_technical_position"),
-                    f"{prefix}.final_technical_position must be empty while more evidence is needed",
+                    f"{prefix}.final_technical_position must be empty for {response}",
                     errors,
                 )
         elif packet_type == "B_FIX_VERIFICATION":
