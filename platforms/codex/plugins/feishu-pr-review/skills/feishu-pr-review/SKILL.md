@@ -20,7 +20,7 @@ description: 管理本机飞书 PR 检视网关，查询、提交、取消或重
 
 用户只 `@` 机器人，或发送 `help`、`帮助`、`怎么用`、询问“能做什么”等使用问题时，网关直接返回帮助卡片，不创建检视任务。无法识别出 PR 的消息也会返回带提示的帮助卡片；包含有效 PR 链接或编号时，检视意图始终优先。
 
-对于有效 GitHub PR URL，除非用户明确要求 report-only，发布规则遵循 `review-pr-with-panel`：共识后的可行动意见发布到 GitHub PR；当前 diff 行可定位时使用行内意见，否则使用 review body。不要自动 approve、request changes 或关闭线程。
+对于有效 GitHub PR URL，除非用户明确要求 report-only，发布规则遵循 `review-pr-with-panel`：共识或 A 终审确认的可行动意见发布到 GitHub PR；`FINAL_BY_A` 意见必须披露 B 异议。当前 diff 行可定位时使用行内意见，否则使用 review body。不要自动 approve、request changes 或关闭线程。
 
 ## MCP 工具
 

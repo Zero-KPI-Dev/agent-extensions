@@ -309,6 +309,7 @@ def _extract_report_status(lines: list[str]) -> str:
         "FIXED_VERIFIED",
         "FIX_VERIFIED",
         "PARTIALLY_FIXED",
+        "FINAL_BY_A",
         "DISPUTED_OPEN",
         "UNVERIFIABLE",
         "NO_ACTIONABLE_FINDINGS",
@@ -634,7 +635,7 @@ def build_help_card(
             _card_div(
                 "**执行方式**\n"
                 "后台运行 **Leader + A/B 独立复核**；完成后回传结果，"
-                "并按 Skill 规则将共识后的可行动意见发布到 GitHub PR。"
+                "并按 Skill 规则将共识或 A 终审确认的可行动意见发布到 GitHub PR。"
             ),
             {"tag": "hr"},
             _card_div("再次查看本帮助：只需 **@本机器人**，或发送 `help`、`帮助`、`怎么用`。"),
@@ -685,7 +686,7 @@ def build_ack_card(
         title, template = "PR 检视已受理", "blue"
         detail = (
             "后台将执行 **Leader + A/B 独立复核**。完成后自动回传结果；"
-            "共识后的可行动意见会发布到 GitHub PR。"
+            "共识或 A 终审确认的可行动意见会发布到 GitHub PR。"
         )
 
     metadata = "\n".join(
@@ -756,6 +757,8 @@ def build_review_card(report: str, pr_url: str | None = None, max_length: int = 
         title, template = "✅ PR 复检通过", "green"
     elif is_clean_conclusion:
         title, template = "✅ PR 检视未发现问题", "green"
+    elif normalized_conclusion == "FINAL_BY_A":
+        title, template = "⚠️ 检视发现待处理问题", "orange"
     elif data["findings"]:
         title, template = "⚠️ 检视发现待处理问题", "orange"
     elif conclusion.upper() in {"PARTIALLY_FIXED", "DISPUTED_OPEN", "UNVERIFIABLE"}:
@@ -804,6 +807,8 @@ def build_review_card(report: str, pr_url: str | None = None, max_length: int = 
         outcome = "✅ **历史问题已验证修复，本轮无待处理意见**"
     elif is_clean_conclusion:
         outcome = "✅ **未发现待处理问题**"
+    elif normalized_conclusion == "FINAL_BY_A":
+        outcome = "⚠️ **存在 A 终审确认的待处理问题；请查看 B 异议披露**"
     elif data["findings"]:
         outcome = "⚠️ **发现待处理问题，但摘要未提供严重级别统计**"
     elif is_follow_up:

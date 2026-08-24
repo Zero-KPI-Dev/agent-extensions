@@ -30,16 +30,16 @@ A/B prompt 必须自包含仓库、范围、base/head、run context、证据包�
 
 ## Leader 决策矩阵
 
-默认使用 `balanced`。把 `quality` 留给用户明确要求、高风险边界或 broad 首检；不要让窄范围复检例行使用 `xhigh`/`max`。
+默认使用 `balanced`。模型档位是基于当前已知实测与人工判断设置的质量下限，不把任何单一外部排行榜的分数固化成永久事实；模型版本或运行环境变化时应重新校准。窄范围复检通过最小证据包控制成本，但仍遵守 Terra 至少 `xhigh`、Luna 只使用 `xhigh`/`max`、Sol 至少 `high` 的下限。
 
 | 模式与风险 | Agent A | Agent B | 适用判断 |
 |---|---|---|---|
-| 首次，高风险或 broad | `sol/high`；极复杂时 `sol/xhigh` | `terra/high` | 安全、权限、并发、迁移、事务、大重构 |
-| 首次，standard | `terra/high` | `luna/high` | 变更可追踪、范围正常 |
-| 首次，low 且 narrow | `terra/medium` | `luna/medium` | 低风险、小范围、边界清晰 |
-| 修复复检，高风险 | `terra/high`；复杂关闭门禁可升 `sol/high` | `luna/high`；必要时 `terra/high` | 关闭错误代价高，但范围仍冻结 |
-| 修复复检，standard | `terra/medium` | `luna/medium` | 只验证旧触发路径和直接回归 |
-| 修复复检，low 且 narrow | `luna/medium` | `luna/medium` | 证据和变更均局部；独立性来自不同 Agent 上下文 |
+| 首次，高风险或 broad | `sol/xhigh`；极复杂时 `sol/max` | `terra/max` | 安全、权限、并发、迁移、事务、大重构 |
+| 首次，standard | `sol/high` | `luna/max` | 变更可追踪、范围正常 |
+| 首次，low 且 narrow | `terra/xhigh` | `luna/max` | 低风险、小范围、边界清晰 |
+| 修复复检，高风险 | `sol/high`；复杂关闭门禁可升 `sol/xhigh` | `terra/max` | 关闭错误代价高，但范围仍冻结 |
+| 修复复检，standard | `terra/xhigh` | `luna/max` | 只验证旧触发路径和直接回归 |
+| 修复复检，low 且 narrow | `terra/xhigh` | `luna/xhigh` | 证据和变更均局部；独立性来自不同 Agent 上下文 |
 
 如果历史质量为 `weak` 或 `none`、模式置信度为 `low`、旧路径无法清楚映射，按更高风险配置运行；若无法建立可靠 lineage，则直接选择 `INITIAL_REVIEW`。
 
@@ -49,9 +49,9 @@ A/B prompt 必须自包含仓库、范围、base/head、run context、证据包�
 
 | Profile | 默认倾向 | 用途 |
 |---|---|---|
-| `quality` | A/B 比 balanced 高一档；高风险可用 `sol/xhigh` | 用户明确要求最高质量或极高风险任务 |
-| `balanced` | 按上表；复检通常 A `terra/medium`、B `luna/medium` | 默认，兼顾证据质量与 token 成本 |
-| `economy` | A `luna/medium`、B `luna/medium` | 低风险、小型、高频任务 |
+| `quality` | A/B 比 balanced 高一档；高风险优先 `sol/max` + `terra/max` | 用户明确要求最高质量或极高风险任务 |
+| `balanced` | 按上表；standard 首检使用 `sol/high` + `luna/max`，standard 复检使用 `terra/xhigh` + `luna/max` | 默认，兼顾证据质量与 token 成本 |
+| `economy` | A `terra/xhigh`、B `luna/xhigh` | 仅限低风险、小型、高频任务，仍不突破质量下限 |
 | `custom` | 使用用户或 Leader 明确选择 | 必须记录选择理由 |
 
 安全关键、数据迁移、并发、权限边界或大范围重构不得自动采用 `economy`。用户明确要求低成本时可以记录风险警告，但不应隐瞒由此产生的检视能力下降。
@@ -65,15 +65,17 @@ A/B prompt 必须自包含仓库、范围、base/head、run context、证据包�
 
 ## 可用性与降级
 
-只使用当前子 Agent 工具明确公布的模型和推理强度组合。优先保持模型不变、降低推理强度；若模型组合仍不可用，再切换到下一模型并记录原因：
+只使用当前子 Agent 工具明确公布的模型和推理强度组合。降级时优先选择仍满足质量下限的可用组合，不为了保留同一模型而跌破该模型的推理下限：
 
-- A `sol/ultra` → `sol/xhigh` → `sol/high` → 当前父模型 `high` → 完全继承父配置；
-- A `sol/xhigh` → `sol/high` → 当前父模型 `high` → 完全继承父配置；
-- A/B `luna/medium` → `luna/low` → `terra/medium` → 当前父模型 `medium`；
-- A/B `luna/high` → `luna/medium` → `terra/medium` → 当前父模型 `medium`；
-- B `luna/max` → `luna/xhigh` → `luna/high` → `terra/high` → 当前父模型 `high`；
-- B `terra/xhigh` → `terra/high` → `sol/high` → 当前父模型 `high`；
-- B `terra/high` → `sol/high` → 当前父模型 `high`。
+- A `sol/ultra` → `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
+- A `sol/max` → `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
+- A `sol/xhigh` → `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
+- A `sol/high` → `terra/max` → `terra/xhigh` → 当前父模型 `high`；
+- A `terra/xhigh` → `terra/max` → `sol/high` → 当前父模型 `high`；
+- B `luna/max` → `luna/xhigh` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
+- B `luna/xhigh` → `luna/max` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
+- B `terra/max` → `terra/xhigh` → `sol/high` → 当前父模型 `high`；
+- B `terra/xhigh` → `terra/max` → `sol/high` → 当前父模型 `high`。
 
 若显式组合被运行时拒绝：
 

@@ -30,7 +30,7 @@ A/B 之间只传递本契约规定的 JSON packet，便于机器校验和逐轮�
   "current_head": "current-head-sha",
   "prior_review_id": "previous-review-id-or-null",
   "github_target": "https://github.com/owner/repo/pull/123-or-null",
-  "publish_policy": "AUTO_AFTER_CONSENSUS | REPORT_ONLY | NOT_APPLICABLE",
+  "publish_policy": "AUTO_AFTER_PANEL_DECISION | REPORT_ONLY | NOT_APPLICABLE",
   "publish_status": "NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED",
   "mode_reason": "可验证的历史和 Git 依据",
   "mode_confidence": "high | medium | low"
@@ -40,6 +40,8 @@ A/B 之间只传递本契约规定的 JSON packet，便于机器校验和逐轮�
 复检 run 还应记录 `recheck_scope_policy: "FROZEN_HIGH_CRITICAL_ONLY"`。它表示默认只更新旧 finding 生命周期；不是新增普通意见的授权。
 
 `previous_head`、`current_head` 和 `finding_id` 是修复复检建立 lineage 的最低要求。没有可靠 lineage 时不得自动关闭旧 finding。若存在 GitHub PR URL，还要保留 `github_target`、`publish_policy` 和 `publish_status`，以便避免重复发布并追踪外部状态。
+
+新 run 使用 `AUTO_AFTER_PANEL_DECISION`，表示可发布 `AGREED` 或通过门禁的 `FINAL_BY_A` finding。历史 packet 中的 `AUTO_AFTER_CONSENSUS` 只作为兼容值读取，不应写入新 run，也不能据此丢失既有 finding lineage。
 
 每次 run 还必须建立 Skill-owned runtime context。该 context 不改变 packet_type，但用于让 Leader、A、B 共享同一个 SQLite 协作边界：
 
@@ -185,7 +187,7 @@ A 复查包：
 }
 ```
 
-round=3 时，仍有分歧的 `A_RECHECK` response 必须填写 `final_technical_position`。
+当 A 决定维持或撤回 finding 并结束当前分歧时，`A_RECHECK` response 必须填写 `final_technical_position`；不能等到固定轮次才给出终审立场。`NEED_MORE_EVIDENCE` 不得伪装成最终立场。
 
 ## 共识与结束
 
@@ -194,7 +196,11 @@ round=3 时，仍有分歧的 `A_RECHECK` response 必须填写 `final_technical
 - B 确认且 A 维持：`AGREED`。
 - A 接受 B 的修订、升级或降级：`AGREED`。
 - A 撤回且 B 驳回：`CLOSED_REJECTED`。
-- 事实、可达性、影响或级别仍冲突：`DISPUTED`。
-- 三轮后仍冲突：`FINAL_BY_A`，保留 B 异议。
+- B 的 supplementary finding 被 A 以证据驳回：`CLOSED_REJECTED`，保留 B 的理由但不作为 actionable finding。
+- A 已直接回应 B 的最强反证、给出 `final_technical_position` 并维持自己的 actionable finding，而 B 没有新的实质证据：立即以 `FINAL_BY_A` 收束，保留并披露 B 异议；不需要为了达到固定轮数继续争论。
+- A 撤回自己的 finding，或接受 B 的 supplementary finding 后，按更新后的有效性与级别形成 `AGREED` 或 `CLOSED_REJECTED`，不得把已撤回 finding 作为 `FINAL_BY_A` 发布。
+- A 使用 `NEED_MORE_EVIDENCE`、没有回应决定性反证，或双方仍提出尚未验证的新实质证据：`DISPUTED`。只有完成最小补证后才能继续；达到三轮安全上限仍不能裁决时保持 `DISPUTED`，不得用轮数自动生成 `FINAL_BY_A`。
+
+状态层级必须唯一：上述内部 packet/finding-level 状态为 `DISPUTED`；Leader 生成对外 Markdown、飞书摘要和 run 总结时，顶层报告状态映射为 `DISPUTED_OPEN`。不得把 `DISPUTED_OPEN` 回写成 finding 共识，也不得把 `DISPUTED` 误当成可发布决定。
 
 修复复检使用独立的精简契约 `references/fix-verification-contract.md`，不要为普通复检加载本文件的首检 schema。

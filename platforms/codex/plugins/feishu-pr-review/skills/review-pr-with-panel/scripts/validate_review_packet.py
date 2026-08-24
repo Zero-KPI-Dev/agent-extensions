@@ -195,8 +195,21 @@ def validate(packet: dict) -> list[str]:
             require(item.get("response") in RESPONSES, f"{prefix}.response is invalid", errors)
             require(item.get("current_validity") in VALIDITIES, f"{prefix}.current_validity is invalid", errors)
             require(item.get("current_severity") in SEVERITIES, f"{prefix}.current_severity is invalid", errors)
-            if round_number == 3 and item.get("consensus") is False:
-                require(bool(item.get("final_technical_position")), f"{prefix}.final_technical_position is required for unresolved round 3", errors)
+            consensus = item.get("consensus")
+            response = item.get("response")
+            require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
+            if consensus is False and response != "NEED_MORE_EVIDENCE":
+                require(
+                    bool(item.get("final_technical_position")),
+                    f"{prefix}.final_technical_position is required for a definitive non-consensus response",
+                    errors,
+                )
+            if response == "NEED_MORE_EVIDENCE":
+                require(
+                    not item.get("final_technical_position"),
+                    f"{prefix}.final_technical_position must be empty while more evidence is needed",
+                    errors,
+                )
         elif packet_type == "B_FIX_VERIFICATION":
             require(isinstance(item, dict), f"{prefix} must be an object", errors)
             if not isinstance(item, dict):

@@ -52,6 +52,8 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。A 可以在启动�
 - `NEED_MORE_EVIDENCE`：说明缺口和最小验证动作。
 - `WITHDRAW`：撤回原 finding。
 
+当 A 选择 `REJECT_WITH_EVIDENCE` 或在回应 B 后维持自己的 finding 时，必须逐条回应 B 的最强反证，提供新的或重新定位的直接证据，并填写 `final_technical_position`。如果 B 没有新的实质证据，该立场是首次检视的终审输入；A 不得用重复原主张代替回应，也不得因终审权跳过反证。
+
 只有 Leader 因实质分歧再次调用时才返回 `A_FIX_RECHECK`：
 
 - `ACCEPT_CLOSURE`：只有 B 的证据也支持关闭时使用。
