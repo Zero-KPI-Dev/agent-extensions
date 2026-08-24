@@ -119,7 +119,12 @@ class RecheckFindingGateTests(unittest.TestCase):
 
 class AgentAFinalPositionTests(unittest.TestCase):
     @staticmethod
-    def packet(*, response: str, final_position: str | None) -> dict:
+    def packet(
+        *,
+        response: str,
+        final_position: str | None,
+        consensus: bool = False,
+    ) -> dict:
         return {
             "packet_type": "A_RECHECK",
             "round": 1,
@@ -131,7 +136,7 @@ class AgentAFinalPositionTests(unittest.TestCase):
                     "response": response,
                     "current_validity": "CONFIRMED",
                     "current_severity": "High",
-                    "consensus": False,
+                    "consensus": consensus,
                     "final_technical_position": final_position,
                 }
             ],
@@ -162,6 +167,19 @@ class AgentAFinalPositionTests(unittest.TestCase):
         )
 
         self.assertEqual(errors, [])
+
+    def test_consensus_withdrawal_still_requires_final_position(self) -> None:
+        errors = validate(
+            self.packet(
+                response="WITHDRAW",
+                final_position=None,
+                consensus=True,
+            )
+        )
+
+        self.assertTrue(
+            any("final_technical_position is required" in error for error in errors)
+        )
 
 
 if __name__ == "__main__":

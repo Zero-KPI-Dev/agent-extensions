@@ -198,10 +198,13 @@ def validate(packet: dict) -> list[str]:
             consensus = item.get("consensus")
             response = item.get("response")
             require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
-            if consensus is False and response != "NEED_MORE_EVIDENCE":
+            requires_final_position = response == "WITHDRAW" or (
+                consensus is False and response != "NEED_MORE_EVIDENCE"
+            )
+            if requires_final_position:
                 require(
                     bool(item.get("final_technical_position")),
-                    f"{prefix}.final_technical_position is required for a definitive non-consensus response",
+                    f"{prefix}.final_technical_position is required for a definitive response or withdrawal",
                     errors,
                 )
             if response == "NEED_MORE_EVIDENCE":
