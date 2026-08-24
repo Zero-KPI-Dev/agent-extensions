@@ -61,6 +61,38 @@ GitHub 发布: 已发布
         self.assertIn("INCREMENTAL_REREVIEW（增量复检）", content)
         self.assertIn("本轮无待处理意见", content)
 
+    def test_final_by_a_is_never_rendered_as_a_clean_review(self) -> None:
+        report = """PR 检视完成
+模式: INITIAL_REVIEW
+结论: FINAL_BY_A
+主要发现摘要: A 维持 F-001；B 的反证已披露但未改变终审结论。
+"""
+
+        card = build_review_card(report, pr_url=self.pr_url)
+
+        self.assertEqual(card["header"]["template"], "orange")
+        self.assertEqual(card["header"]["title"]["content"], "⚠️ 检视发现待处理问题")
+        content = self.card_text(card)
+        self.assertIn("FINAL_BY_A", content)
+        self.assertIn("存在 A 终审确认的待处理问题", content)
+        self.assertNotIn("✅ **未发现待处理问题**", content)
+
+    def test_final_by_a_with_counts_still_discloses_non_consensus_outcome(self) -> None:
+        report = """PR 检视完成
+模式: INITIAL_REVIEW
+结论: FINAL_BY_A
+发现数量: Critical 0 / High 1 / Medium 0 / Low 0 / Suggestion 0
+主要发现摘要:
+- F-001 High: A 维持 finding；B 的异议已保留。
+"""
+
+        card = build_review_card(report, pr_url=self.pr_url)
+
+        content = self.card_text(card)
+        self.assertEqual(card["header"]["template"], "orange")
+        self.assertIn("🟠 发现 1 个问题（含 High）", content)
+        self.assertIn("存在 A 终审确认的待处理问题", content)
+
     def test_fix_verified_history_is_not_treated_as_actionable(self) -> None:
         report = """- PR：https://github.com/tech-innovation-group/echomem/pull/365
 - review_id：`R-20260820-144240-824903decaba`

@@ -43,6 +43,8 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。B 可以在完成�
 
 首次或增量新 finding 严格返回单个 JSON `B_VERIFICATION` packet，不添加 JSON 之外的说明。每条 review 必须包含证据检查、反证、级别决定、理由和可执行的补证请求。
 
+B 的职责是独立验证和提出最强反证，不拥有对首次检视的无限期否决权。A 已直接回应反证并给出最终技术立场、且 B 没有新的实质证据时，B 的异议会被保留和披露，但当前分歧应收束；不得改写同一主张制造虚假的“新证据”以延长轮次。
+
 修复复检严格返回单个 JSON `B_FIX_VERIFICATION` packet。每条 review 必须包含 `status_decision`、`proposed_status`、`remaining_trigger_path`、回归检查和置信度。
 
 复检默认返回 `supplementary_findings: []`。只有当前 revision 新引入或实质恶化的问题同时满足直接证据、现实可达、`High`/`Critical` 严重级别，并会阻断主要功能交付或显著威胁系统稳定性、可用性或数据完整性时，才可放入 `supplementary_findings`，并填写 `recheck_gate`；不得为了显示独立性而新增普通意见。后续只审查仍有实质分歧的 finding，并明确新证据是否改变状态。

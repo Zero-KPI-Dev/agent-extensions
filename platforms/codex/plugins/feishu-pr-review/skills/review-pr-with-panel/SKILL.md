@@ -73,7 +73,7 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 ## 模型与成本策略
 
-按 `references/model-policy.md` 记录 requested/effective 模型及 reasoning。默认使用成本感知的 `balanced` profile；低风险窄复检优先轻量模型和中等推理，高风险关闭决策再升级。用户明确要求最高质量时使用 `quality`。
+按 `references/model-policy.md` 记录 requested/effective 模型及 reasoning。默认使用成本感知的 `balanced` profile，但不得低于策略规定的模型推理下限；低风险窄复检通过冻结范围和压缩证据包控制成本，不通过降低到未经验证的弱推理档位节省成本。用户明确要求最高质量时使用 `quality`。
 
 显式传 `model`/`reasoning_effort` 时必须同时传 `fork_turns: "none"`，并使用自包含 Agent prompt；不得省略 `fork_turns` 或使用 `all` 后再声称模型覆盖生效。若当前 `spawn_agent` 工具元数据列出 Luna，就先真实请求 Luna，不得因为其他工具、旧会话或猜测而预先改用 Terra。只有该次 Luna 调用返回明确的不支持/不可用错误后才按降级链重试，并记录原始错误。不要把完整 prompt 重发给同一 Agent；后续 turn 只发送仍有分歧的 finding ID、新证据和具体问题。
 
@@ -83,8 +83,9 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 1. A 读取授权 diff，返回 `A_INITIAL`。
 2. A packet 通过质量门禁后，B 使用相同代码基准独立验证并返回 `B_VERIFICATION`。
-3. 仅把有实质分歧的 finding 发回同一个 A；无新证据时停止争论。
-4. 最多三轮 `B → A`；第三轮仍有分歧时保留 B 异议并按 contract 收束。
+3. 仅把有实质分歧的 finding、B 的最强反证和具体问题发回同一个 A。A 必须直接回应反证，并填写可审计的最终技术立场。
+4. 若 A 接受 B 的修订则形成共识；若 A 已明确回应 B 的反证并维持结论，且 B 没有新的实质证据，立即按 contract 以 A 的终审立场收束并保留 B 异议。
+5. 只有出现新的实质证据才继续下一轮 `B → A`。最多三轮是新证据持续出现时的安全上限，不是形成 `FINAL_BY_A` 的前置条件；A 未回应决定性反证或主动要求补证时保持 `DISPUTED`。
 
 ### 修复复检快路径
 
@@ -102,7 +103,7 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 对有效 GitHub PR URL，且用户未要求只读/仅报告时，按 `references/github-publish.md` 自动发布：
 
-- 只发布已达成一致的 actionable finding，默认 action 为 `COMMENT`；
+- 发布已达成一致，或满足 A 终审发布门禁的 actionable finding，默认 action 为 `COMMENT`；A 终审意见必须在评论中披露 B 的异议；
 - 复检不得为重述旧意见创建新的 inline comment；旧 finding 只在 review body 更新生命周期；
 - 只有通过复检新增意见门禁的 High/Critical 新问题或回归才可新增 inline；
 - 不自动批准、请求修改或关闭旧 thread；发布失败要报告真实状态。
@@ -111,7 +112,7 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 Leader 不按票数裁决，也不发明折中级别。输出模式、base/head、局限、旧 finding 状态和证据、有效新 finding、未决分歧、轮数、requested/effective 模型与选择理由。
 
-无有效 finding 输出 `NO_ACTIONABLE_FINDINGS`；全部旧 finding 共同验证后输出 `FIX_VERIFIED`；部分残留输出 `PARTIALLY_FIXED`；未决分歧输出 `DISPUTED_OPEN`；无新版本输出 `NO_NEW_REVISION`。避免声称绝对无缺陷。
+无有效 finding 输出 `NO_ACTIONABLE_FINDINGS`；全部旧 finding 共同验证后输出 `FIX_VERIFIED`；部分残留输出 `PARTIALLY_FIXED`；首检由 A 回应反证后终审收束输出 `FINAL_BY_A`；A 未回应决定性反证或仍需补证时输出 `DISPUTED_OPEN`；无新版本输出 `NO_NEW_REVISION`。避免声称绝对无缺陷。
 
 当 packet 已保存为 JSON 时，可运行 `python3 scripts/validate_review_packet.py <packet.json>` 做机械校验；语义仍由 Leader 判断。
 

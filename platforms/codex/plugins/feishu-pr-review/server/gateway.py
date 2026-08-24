@@ -229,7 +229,7 @@ Skill 名称：review-pr-with-panel
 
 请严格执行该 Skill 的完整流程：根据当前 PR 状态选择正确的 review mode，使用 Leader 加两个独立的 A/B 验证代理，保持只读，不实现修复。
 
-这不是 report-only 请求。对于有效的 GitHub PR URL，请遵循 Skill 的 GitHub 发布规则：共识后的可行动检视意见应发布到 GitHub PR；能定位到当前 diff 行时发布行内意见，否则发布到 review body。不要自动 approve、request changes 或关闭线程。若已经存在历史检视结果，请按 Skill 的 finding lineage 与 follow-up 规则避免重复意见。
+这不是 report-only 请求。对于有效的 GitHub PR URL，请遵循 Skill 的 GitHub 发布规则：共识或 A 终审确认的可行动检视意见应发布到 GitHub PR；`FINAL_BY_A` 意见必须披露 B 异议。能定位到当前 diff 行时发布行内意见，否则发布到 review body。不要自动 approve、request changes 或关闭线程。若已经存在历史检视结果，请按 Skill 的 finding lineage 与 follow-up 规则避免重复意见。
 
 任务结束时，请返回适合飞书回传的中文摘要。以下字段必须逐项明确给出：PR、review_id、mode（精确使用 INITIAL_REVIEW、FIX_VERIFICATION、INCREMENTAL_REREVIEW 或 NO_NEW_REVISION）、结论、发现数量（按 Critical/High/Medium/Low/Suggestion 分级）、主要发现摘要、GitHub 发布状态、未发布或阻塞原因（如有）。即使某项为空或数量为 0 也不要省略；不要只返回“已完成”。"""
 
@@ -624,7 +624,7 @@ class Gateway:
         else:
             ack = (
                 f"PR 检视已受理｜{pr_label or repo_key}｜任务 {job_id[:8]}｜等待执行。"
-                "完成后自动回传结果；共识后的可行动意见会发布到 GitHub PR。"
+                "完成后自动回传结果；共识或 A 终审确认的可行动意见会发布到 GitHub PR。"
             )
         self.store.set_ack(job_id, ack)
         self._send_ack(

@@ -4,6 +4,11 @@
 
 这是一个本机优先的 Codex 插件：在飞书群里 `@` 机器人并发送 GitHub PR 链接或默认仓库的 PR 号码，机器人先确认收到，再把任务提交到与 Codex App 共用的本机 App Server，调用插件内置的 `review-pr-with-panel` 完成只读检视，最后把结果回传飞书；GitHub 上的可行动检视意见按该 Skill 的发布规则写入 PR。只 `@` 机器人，或询问 `help`、`帮助`、`怎么用` 时，会直接收到使用帮助卡片，不创建检视任务。
 
+## 版本说明
+
+- `0.1.1`：A 作为主检视官，在直接回应 B 的反证后可以终审收束；GitHub 发布范围扩展为共识或 A 终审确认的可行动意见，并在非共识发布中保留 B 异议。
+- 提高 A/B 默认模型下限：Terra 至少使用 `xhigh`，Luna 只使用 `xhigh`/`max`，Sol 至少使用 `high`。
+
 ## 运行方式
 
 - 飞书网关需要一直保持长连接、维护队列并回传，所以由 macOS `launchd` 自启动并在崩溃后拉起。
@@ -165,7 +170,7 @@ curl http://127.0.0.1:8787/health
 机器人先回：
 
 ```text
-已收到 PR 检视请求（a1b2c3d4）。我会在后台执行完整的 review-pr-with-panel 流程；完成后回传结果，并按 Skill 规则把共识后的可行动意见发布到 GitHub PR。
+已收到 PR 检视请求（a1b2c3d4）。我会在后台执行完整的 review-pr-with-panel 流程；完成后回传结果，并按 Skill 规则把共识或 A 终审确认的可行动意见发布到 GitHub PR。
 ```
 
 飞书不会收到 thread 创建或中间步骤消息。Codex App 会记录该任务，但由于当前 app-server 只允许一个客户端持有 thread 写入权，外部网关执行期间不能在 Codex App 中实时查看同一个 turn；任务完成后可在 App 中打开历史。最终摘要默认以飞书交互式卡片回传：卡片头部颜色会随最高待处理问题级别变化，并用 🔴/🟠/🟡/🔵 标出 Critical/High/Medium/Low，让是否存在待处理意见一眼可见；`FIX_VERIFIED` 等成功结论中的历史已修复 finding 只作为验证记录展示，不计入待处理意见。同时展示 PR、Review ID、模式、GitHub 发布状态和主要发现，并提供“查看 GitHub PR”按钮。若租户拒绝卡片消息，网关会自动回退为普通文本，避免结果丢失。

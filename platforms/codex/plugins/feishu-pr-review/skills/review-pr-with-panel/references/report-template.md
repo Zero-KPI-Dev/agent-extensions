@@ -23,8 +23,11 @@ Leader 必须按以下固定顺序生成一份最终 Markdown 报告。A/B 的 J
 - `NO_ACTIONABLE_FINDINGS`：本轮没有可执行 finding。
 - `FIX_VERIFIED`：既有 finding 已由 A、B 共同验证修复。
 - `PARTIALLY_FIXED`：部分修复，仍需处理残留风险。
+- `FINAL_BY_A`：首次检视中 A 已回应 B 的最强反证并作出终审；存在 A 确认的 actionable finding，同时保留并披露 B 异议。
 - `DISPUTED_OPEN`：A、B 对修复或结论仍有实质分歧，保持开放。
 - `NO_NEW_REVISION`：当前版本已经检视过，没有新的待检视版本。
+
+内部 packet 中的 finding-level `DISPUTED` 在对外报告中显示为 finding 当前状态 `DISPUTED`，并将顶层报告状态映射为 `DISPUTED_OPEN`；两者不是两个不同裁决。
 
 ## 固定模板
 
@@ -33,7 +36,7 @@ Leader 必须按以下固定顺序生成一份最终 Markdown 报告。A/B 的 J
 review_id: {{review_id}}
 prior_review_id: {{prior_review_id}}
 mode: {{INITIAL_REVIEW | FIX_VERIFICATION | INCREMENTAL_REREVIEW | NO_NEW_REVISION}}
-status: {{ACTION_REQUIRED | NO_ACTIONABLE_FINDINGS | FIX_VERIFIED | PARTIALLY_FIXED | DISPUTED_OPEN | NO_NEW_REVISION}}
+status: {{ACTION_REQUIRED | NO_ACTIONABLE_FINDINGS | FIX_VERIFIED | PARTIALLY_FIXED | FINAL_BY_A | DISPUTED_OPEN | NO_NEW_REVISION}}
 repository: {{repository}}
 pull_request: {{pull_request_or_none}}
 base: {{base}}
@@ -41,7 +44,7 @@ previous_head: {{previous_head_or_none}}
 current_head: {{current_head}}
 rounds: {{rounds}}
 github_target: {{github_target_or_none}}
-publish_policy: {{AUTO_AFTER_CONSENSUS | REPORT_ONLY | NOT_APPLICABLE}}
+publish_policy: {{AUTO_AFTER_PANEL_DECISION | REPORT_ONLY | NOT_APPLICABLE}}
 publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 -->
 
@@ -74,7 +77,7 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 | 字段 | 内容 |
 |---|---|
-| 当前状态 | `{{OPEN | FIXED_VERIFIED | PARTIALLY_FIXED | NOT_FIXED | UNVERIFIABLE | OBSOLETE | DISPUTED_OPEN}}` |
+| 当前状态 | `{{OPEN | FIXED_VERIFIED | PARTIALLY_FIXED | NOT_FIXED | UNVERIFIABLE | OBSOLETE | FINAL_BY_A | DISPUTED}}` |
 | Revision | `{{revision}}` |
 | 位置 | [`{{path}}:{{line}}`]({{github_permalink}}) |
 | 置信度 | `{{high | medium | low}}` |
@@ -112,7 +115,7 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 ## 未解决分歧
 
-{{列出 finding_id、A 与 B 的分歧、各自证据和当前处理状态；没有则写“无”。}}
+{{列出 finding_id、A 与 B 的分歧、各自证据和当前处理状态；`FINAL_BY_A` 必须写明 A 的最终技术立场、B 的最强反证及其未改变结论的原因，并标注“非共识结论”；没有则写“无”。}}
 
 ## 协作记录
 

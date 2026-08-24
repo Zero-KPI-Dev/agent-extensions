@@ -32,13 +32,34 @@ SEVERITY_DECISIONS = {
     "NOT_APPLICABLE",
     "UNDETERMINED",
 }
-RESPONSES = {
-    "ACCEPT",
-    "PARTIAL_ACCEPT",
-    "REJECT_WITH_EVIDENCE",
-    "NEED_MORE_EVIDENCE",
-    "WITHDRAW",
+A_RECHECK_RULES = {
+    "ACCEPT": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": True,
+        "final_position": "forbidden",
+    },
+    "PARTIAL_ACCEPT": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": False,
+        "final_position": "required",
+    },
+    "REJECT_WITH_EVIDENCE": {
+        "validities": {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+        "consensus": False,
+        "final_position": "required",
+    },
+    "NEED_MORE_EVIDENCE": {
+        "validities": {"INSUFFICIENT_EVIDENCE"},
+        "consensus": False,
+        "final_position": "forbidden",
+    },
+    "WITHDRAW": {
+        "validities": {"REJECTED"},
+        "consensus": True,
+        "final_position": "required",
+    },
 }
+RESPONSES = set(A_RECHECK_RULES)
 FIX_STATUSES = {
     "FIXED_VERIFIED",
     "PARTIALLY_FIXED",
@@ -195,8 +216,36 @@ def validate(packet: dict) -> list[str]:
             require(item.get("response") in RESPONSES, f"{prefix}.response is invalid", errors)
             require(item.get("current_validity") in VALIDITIES, f"{prefix}.current_validity is invalid", errors)
             require(item.get("current_severity") in SEVERITIES, f"{prefix}.current_severity is invalid", errors)
-            if round_number == 3 and item.get("consensus") is False:
-                require(bool(item.get("final_technical_position")), f"{prefix}.final_technical_position is required for unresolved round 3", errors)
+            consensus = item.get("consensus")
+            response = item.get("response")
+            require(isinstance(consensus, bool), f"{prefix}.consensus must be boolean", errors)
+            response_rule = A_RECHECK_RULES.get(response)
+            if response_rule is not None:
+                allowed_validities = response_rule["validities"]
+                require(
+                    item.get("current_validity") in allowed_validities,
+                    f"{prefix}.current_validity must be {' or '.join(sorted(allowed_validities))} for {response}",
+                    errors,
+                )
+            if response_rule is not None and isinstance(consensus, bool):
+                expected_consensus = response_rule["consensus"]
+                require(
+                    consensus is expected_consensus,
+                    f"{prefix}.consensus must be {str(expected_consensus).lower()} for {response}",
+                    errors,
+                )
+            if response_rule is not None and response_rule["final_position"] == "required":
+                require(
+                    bool(item.get("final_technical_position")),
+                    f"{prefix}.final_technical_position is required for a definitive response or withdrawal",
+                    errors,
+                )
+            elif response_rule is not None:
+                require(
+                    not item.get("final_technical_position"),
+                    f"{prefix}.final_technical_position must be empty for {response}",
+                    errors,
+                )
         elif packet_type == "B_FIX_VERIFICATION":
             require(isinstance(item, dict), f"{prefix} must be an object", errors)
             if not isinstance(item, dict):
