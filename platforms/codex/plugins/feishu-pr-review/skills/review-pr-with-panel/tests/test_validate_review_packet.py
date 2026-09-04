@@ -17,7 +17,16 @@ def fix_packet(new_findings: list[dict]) -> dict:
         "round": 0,
         "run": {"mode": "FIX_VERIFICATION"},
         "model": {},
-        "scope": {},
+        "scope": {
+            "deployment_context": {
+                "topology": "distributed",
+                "evidence": ["deployment manifest declares multiple replicas"],
+                "affected_components": ["router", "core"],
+                "risk_areas_checked": ["ownership-routing"],
+                "distributed_impact": "SAFE_WITH_EVIDENCE",
+                "limitations": [],
+            }
+        },
         "prior_findings": [],
         "new_findings": new_findings,
     }
@@ -43,6 +52,22 @@ def finding(severity: str, gate: dict | None = None) -> dict:
 
 
 class RecheckFindingGateTests(unittest.TestCase):
+    def test_requires_deployment_context_for_agent_a_packet(self) -> None:
+        packet = fix_packet([])
+        packet["scope"] = {}
+
+        errors = validate(packet)
+
+        self.assertTrue(any("deployment_context must be an object" in error for error in errors))
+
+    def test_rejects_invalid_distributed_impact(self) -> None:
+        packet = fix_packet([])
+        packet["scope"]["deployment_context"]["distributed_impact"] = "LOOKS_FINE"
+
+        errors = validate(packet)
+
+        self.assertTrue(any("distributed_impact is invalid" in error for error in errors))
+
     def test_empty_new_findings_is_valid(self) -> None:
         self.assertEqual(validate(fix_packet([])), [])
 

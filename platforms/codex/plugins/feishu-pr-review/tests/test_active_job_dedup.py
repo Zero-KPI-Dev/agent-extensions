@@ -77,6 +77,64 @@ class ActiveJobDedupTests(unittest.TestCase):
         self.assertNotEqual(first["job_id"], second["job_id"])
         self.assertEqual(len(self.store.list_jobs()), 2)
 
+    def test_completed_rereview_reuses_latest_successful_codex_thread(self) -> None:
+        first, _created = self.submit("event-1")
+        self.store.set_codex_thread_id(str(first["job_id"]), "thread-pr-42")
+        self.store.finish(str(first["job_id"]), status="succeeded")
+
+        second, _created = self.submit("event-2")
+
+        self.assertEqual(
+            self.store.reusable_codex_thread_id(
+                str(second["job_id"]),
+                str(second["pr_url"]),
+            ),
+            "thread-pr-42",
+        )
+
+    def test_retry_keeps_its_own_thread_without_displacing_last_success(self) -> None:
+        successful, _created = self.submit("event-1")
+        self.store.set_codex_thread_id(str(successful["job_id"]), "thread-success")
+        self.store.finish(str(successful["job_id"]), status="succeeded")
+
+        failed, _created = self.submit("event-2")
+        self.store.set_codex_thread_id(str(failed["job_id"]), "thread-failed-job")
+        self.store.finish(str(failed["job_id"]), status="failed")
+
+        self.assertEqual(
+            self.store.reusable_codex_thread_id(
+                str(failed["job_id"]),
+                str(failed["pr_url"]),
+            ),
+            "thread-failed-job",
+        )
+
+        next_job, _created = self.submit("event-3")
+        self.assertEqual(
+            self.store.reusable_codex_thread_id(
+                str(next_job["job_id"]),
+                str(next_job["pr_url"]),
+            ),
+            "thread-success",
+        )
+
+    def test_different_pr_does_not_reuse_thread(self) -> None:
+        first, _created = self.submit("event-1")
+        self.store.set_codex_thread_id(str(first["job_id"]), "thread-pr-42")
+        self.store.finish(str(first["job_id"]), status="succeeded")
+
+        other, _created = self.submit(
+            "event-2",
+            pr_url="https://github.com/org/repo/pull/43",
+        )
+
+        self.assertIsNone(
+            self.store.reusable_codex_thread_id(
+                str(other["job_id"]),
+                str(other["pr_url"]),
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

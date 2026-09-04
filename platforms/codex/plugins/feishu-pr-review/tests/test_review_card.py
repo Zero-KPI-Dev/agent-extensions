@@ -117,6 +117,32 @@ GitHub 发布: 已发布
         self.assertNotIn("检视发现待处理问题", content)
         self.assertNotIn("摘要未提供严重级别统计", content)
 
+    def test_fix_verified_legacy_total_counts_are_reclassified_as_history(self) -> None:
+        report = """- PR：https://github.com/tech-innovation-group/echomem/pull/475
+- review_id：`R-20260904-032743-eb7691332924`
+- mode：`FIX_VERIFICATION`
+- 结论：`FIX_VERIFIED`。3 个历史 finding 均已共同验证关闭；未发现新增可行动问题。
+- 发现数量：Critical 0 / High 1 / Medium 2 / Low 0 / Suggestion 0。以上均为历史 lineage finding，当前全部为 `FIXED_VERIFIED`；开放 actionable finding 为 0。
+- 主要发现摘要：
+  - High `F-001`：状态更新为 `FIXED_VERIFIED`。
+  - Medium `F-002`：保持 `FIXED_VERIFIED`。
+  - Medium `F-003`：保持 `FIXED_VERIFIED`。
+- GitHub 发布状态：`PUBLISHED`，已发布 `COMMENT` review，inline 0。
+- 未发布或阻塞原因：无未发布意见；required checks 仍在运行。
+"""
+
+        card = build_review_card(report, pr_url=self.pr_url)
+
+        self.assertEqual(card["header"]["template"], "green")
+        self.assertEqual(card["header"]["title"]["content"], "✅ PR 复检通过")
+        content = self.card_text(card)
+        self.assertIn("历史问题已验证修复，本轮无待处理意见", content)
+        self.assertIn("**历史问题**", content)
+        self.assertIn("3 条", content)
+        self.assertIn("🟠 **High** 1", content)
+        self.assertIn("🟡 **Medium** 2", content)
+        self.assertNotIn("共发现 3 个待处理问题", content)
+
     def test_failure_header_takes_priority_over_counts(self) -> None:
         report = """PR 检视失败
 模式: INITIAL_REVIEW

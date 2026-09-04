@@ -6,16 +6,19 @@
 
 ## 版本说明
 
+- `0.1.1`：长连接健康检查改为读取真实 WebSocket transport；连接持续失效时等待任务清空并由 launchd 自动恢复，作者映射等投递配置热更新不再重建 WebSocket。
+- `0.1.1`：最终检视卡片支持按机器人维护 GitHub 作者到飞书 Open ID 的映射，并自动 `@PR 作者`；未映射时安全降级为普通回传。
+- `0.1.1`：检视上下文新增分布式部署影响评估；EchoMem 运行时变更会结合当前 Router/Core、tenant ownership、共享控制面/存储及滚动升级边界，由 A/B 独立检查跨副本风险。
 - `0.1.1`：A 作为主检视官，在直接回应 B 的反证后可以终审收束；GitHub 发布范围扩展为共识或 A 终审确认的可行动意见，并在非共识发布中保留 B 异议。
 - 提高 A/B 默认模型下限：Terra 至少使用 `xhigh`，Luna 只使用 `xhigh`/`max`，Sol 至少使用 `high`。
 
 ## 运行方式
 
 - 飞书网关需要一直保持长连接、维护队列并回传，所以由 macOS `launchd` 自启动并在崩溃后拉起。
-- 共享 Codex App Server 由本插件通过 `launchd` 常驻在本机 Unix socket：`~/.codex/app-server-control/app-server-control.sock`。Codex App 和飞书网关连接同一个服务，因此任务会进入同一份 Codex 本地历史；但外部客户端创建的运行中 thread 会由网关持有写入权，Codex App 当前不能实时接管或打开该 turn。
+- 共享 Codex App Server 由本插件通过 `launchd` 常驻在本机 Unix socket：`~/.codex/app-server-control/app-server-control.sock`。Codex App 和飞书网关连接同一个服务，因此任务会进入同一份 Codex 本地历史。网关在 turn 运行期间保留 app-server 订阅，让 Codex App 复用已加载的 thread 并显示实时执行过程；turn 完成后才取消订阅。
 - MCP server 是 Codex 的本机工具入口，Codex 通过 `.mcp.json` 按需以 stdio 启动，不需要单独常驻。
 - 完整的 `review-pr-with-panel` Skill 已打包在 `skills/review-pr-with-panel/`，包含运行脚本和全部检视规则，不依赖用户目录下另行安装的 Skill。
-- 每个任务都会创建自己的 Codex thread，任务状态会记录 `codex_thread_id`；飞书只收到受理消息和最终检视结果，不接收中间进度。
+- 每个 PR 首次检视时创建一个 Codex thread，后续检视/复检优先通过 `thread/resume` 在同一 task 中追加 turn，任务状态持续记录同一个 `codex_thread_id`。如果用户已手动归档旧 task，网关会保留其归档状态并为新请求创建新 task，不会自动 `unarchive`；旧 task 已删除、rollout 不存在或会话元数据无法读取时也会创建替代 thread。飞书只收到受理消息和最终检视结果，不接收中间进度。
 - 网关和 MCP 共享 `~/Library/Application Support/Codex/feishu-pr-review/state.sqlite3`，后台任务不会因为飞书聊天窗口关闭而丢失。
 
 ## 1. 创建配置
@@ -40,6 +43,7 @@ python3 -m pip install -r ~/plugins/feishu-pr-review/requirements-long-connectio
 
 - 显示名称、接入方式、事件路径和启用开关。默认接入方式是 `long_connection`，不需要公网地址。
 - 飞书 App ID 和 App Secret；长连接会自动解析机器人 Open ID，Webhook 备用模式才需要手工填写 Verification Token 和机器人 Open ID。
+- GitHub 作者到飞书用户的提醒映射。飞书用户 Open ID 与应用绑定，因此每个机器人维护自己的一份映射。
 - 是否必须 `@` 机器人。
 
 检视 Skill 默认从插件目录自动解析，不需要配置绝对路径。只有开发调试时需要替换 Skill，才使用环境变量 `REVIEW_SKILL_PATH` 临时覆盖；旧配置中的 `~/.codex/skills/review-pr-with-panel/SKILL.md` 会自动迁移到插件内置版本。
@@ -53,6 +57,33 @@ python3 ~/plugins/feishu-pr-review/scripts/configure.py bot remove review-backen
 python3 ~/plugins/feishu-pr-review/scripts/configure.py repo list
 python3 ~/plugins/feishu-pr-review/scripts/configure.py runtime concurrency 4
 ```
+
+配置 PR 作者提醒时，先让对应同事在目标群里查询自己在该机器人应用下的 Open ID：
+
+```text
+@PR 检视机器人 我的 Open ID
+```
+
+然后在运行网关的电脑上建立映射。GitHub 用户名不区分大小写；同一个人若需要使用多个机器人，每个机器人都要分别绑定一次：
+
+```bash
+python3 ~/plugins/feishu-pr-review/scripts/configure.py author set pr-review github-login ou_xxx
+python3 ~/plugins/feishu-pr-review/scripts/configure.py author list pr-review
+python3 ~/plugins/feishu-pr-review/scripts/configure.py author remove pr-review github-login
+```
+
+检视成功完成后，网关会先从 GitHub 读取 PR 作者，再在最终卡片中 `@` 映射到的飞书用户。找不到作者、未配置映射或 GitHub 暂时不可访问时，结果仍会正常回传，只是不发送 `@` 提醒。作者映射修改会自动热加载，不需要重启网关。
+
+当结论表示可以评估合入（`NO_ACTIONABLE_FINDINGS`、`FIX_VERIFIED`，并兼容 `FIXED_VERIFIED`）时，网关会提醒仓库合入者。`*` 是所有仓库的默认规则；也可以用 `owner/repo` 设置仓库专属人员，专属规则优先：
+
+```bash
+python3 ~/plugins/feishu-pr-review/scripts/configure.py maintainer set pr-review '*' ou_merger_one ou_merger_two
+python3 ~/plugins/feishu-pr-review/scripts/configure.py maintainer set pr-review owner/repo ou_repo_merger
+python3 ~/plugins/feishu-pr-review/scripts/configure.py maintainer list pr-review
+python3 ~/plugins/feishu-pr-review/scripts/configure.py maintainer remove pr-review owner/repo
+```
+
+配置合入者后，这些可合入结论的最终卡片会 `@` 合入者，说明当前无待处理检视意见，并提示结合 required checks 最终状态评估合入；不再提醒 PR 作者。没有匹配的合入者规则时会正常发送结果，但不会错误地回退提醒作者。
 
 只有把某个机器人的 `transport` 改成 `webhook` 时，才需要为它配置 `event_path`、公网 HTTPS 回调地址、Verification Token 和机器人 Open ID。长连接机器人不需要配置这些回调字段，也不需要公网 URL。
 
@@ -70,7 +101,7 @@ python3 ~/plugins/feishu-pr-review/scripts/doctor.py
 
 默认执行器是 `codex_runner: "app_server"`，并通过 `codex_app_server_transport: "shared_unix"` 接入 Codex App 的共享任务通道。如需临时回退到旧的独立 stdio 通道，可把 transport 改成 `"stdio"`；如需回退到旧的非交互执行方式，再把 `codex_runner` 改成 `"exec"`。
 
-后台默认同时执行 4 个 PR 检视任务，可通过 `runtime concurrency` 在 1 到 8 之间调整。不同 PR 可以并行执行；同一个 PR 已有等待中或执行中的任务时，新请求会合并到原任务，不会创建第二个 Codex 会话。若重复请求来自另一个群，最终结果会同时回传到订阅该任务的群。任务结束后仍可明确发起复检。并发数修改后需要重启飞书网关才会生效。
+后台默认同时执行 4 个 PR 检视任务，可通过 `runtime concurrency` 在 1 到 8 之间调整。不同 PR 可以并行执行；同一个 PR 已有等待中或执行中的任务时，新请求会合并到原任务。任务结束后再次发起检视/复检会创建新的队列 job；原 Codex task 未归档时通过 App Server 续接，保留侧边栏历史和模型上下文；原 task 已被用户归档时直接创建新 task，并保持旧 task 归档。若重复请求来自另一个群，最终结果会同时回传到订阅该任务的群。并发数修改后需要重启飞书网关才会生效。
 
 通过 App Server 创建 Codex task 后，网关会在首个 `turn/start` 成功、rollout 已落盘时调用 `thread/name/set`，按 `review-pr-with-panel` 的规则把侧边栏标题设为 `<Repository>#<PR号>`，例如 `EchoMem#345`。旧版 App Server 不支持该方法时只记录告警，不影响检视执行。
 
@@ -156,6 +187,12 @@ curl http://127.0.0.1:8787/health
 
 只 `@` 机器人也会返回帮助卡片。帮助会根据当前配置展示默认仓库、可用的 PR 编号简写、完整链接格式和后台执行规则；没有识别到 PR 的消息会返回带提示的帮助卡片。
 
+查询自己在当前机器人应用下的飞书 Open ID（用于配置作者提醒）：
+
+```text
+@PR 检视机器人 我的 Open ID
+```
+
 ```text
 @PR 检视机器人 https://github.com/acme/service/pull/123
 请重点关注权限校验、并发安全和数据库迁移风险。
@@ -173,7 +210,7 @@ curl http://127.0.0.1:8787/health
 已收到 PR 检视请求（a1b2c3d4）。我会在后台执行完整的 review-pr-with-panel 流程；完成后回传结果，并按 Skill 规则把共识或 A 终审确认的可行动意见发布到 GitHub PR。
 ```
 
-飞书不会收到 thread 创建或中间步骤消息。Codex App 会记录该任务，但由于当前 app-server 只允许一个客户端持有 thread 写入权，外部网关执行期间不能在 Codex App 中实时查看同一个 turn；任务完成后可在 App 中打开历史。最终摘要默认以飞书交互式卡片回传：卡片头部颜色会随最高待处理问题级别变化，并用 🔴/🟠/🟡/🔵 标出 Critical/High/Medium/Low，让是否存在待处理意见一眼可见；`FIX_VERIFIED` 等成功结论中的历史已修复 finding 只作为验证记录展示，不计入待处理意见。同时展示 PR、Review ID、模式、GitHub 发布状态和主要发现，并提供“查看 GitHub PR”按钮。若租户拒绝卡片消息，网关会自动回退为普通文本，避免结果丢失。
+飞书不会收到 thread 创建或中间步骤消息。Codex App 会把同一 PR 的后续检视记录在同一个 task 中，但由于当前 app-server 只允许一个客户端持有 thread 写入权，外部网关执行期间不能在 Codex App 中实时查看同一个 turn；任务完成后可在 App 中打开连续历史。最终摘要默认以飞书交互式卡片回传：存在待处理意见且配置了作者映射时，卡片首先 `@PR 作者`；`NO_ACTIONABLE_FINDINGS`、`FIX_VERIFIED` 等可合入结论则改为 `@` 对应仓库的合入者。卡片头部颜色会随最高待处理问题级别变化，并用 🔴/🟠/🟡/🔵 标出 Critical/High/Medium/Low，让是否存在待处理意见一眼可见；`FIX_VERIFIED` 等成功结论中的历史已修复 finding 只作为验证记录展示，不计入待处理意见。同时展示 PR、Review ID、模式、GitHub 发布状态和主要发现，并提供“查看 GitHub PR”按钮。若租户拒绝卡片消息，网关会自动回退为带 `@` 的普通文本，避免结果或提醒丢失。
 
 如果需要临时关闭卡片，可在配置文件中设置：
 

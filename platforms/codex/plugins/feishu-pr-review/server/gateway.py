@@ -7,6 +7,9 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,7 +33,11 @@ from .feishu import (
     extract_pr_number,
     extract_pr_url,
     is_help_request,
+    is_identity_request,
+    is_merge_ready_conclusion,
+    notification_mention_text,
     parse_event,
+    review_conclusion,
 )
 from .long_connection import LongConnectionManager
 from .resource_health import app_server_resource_status
@@ -110,6 +117,74 @@ def _pr_task_title(pr_url: str, repo_root: Path | None = None) -> str | None:
     return f"{repository}#{int(parts[3])}"
 
 
+def _normalized_github_login(value: Any) -> str | None:
+    login = str(value or "").strip().lstrip("@")
+    if not login or len(login) > 100:
+        return None
+    if not all(character.isalnum() or character in "-_.[]" for character in login):
+        return None
+    return login
+
+
+def _github_pr_api_url(pr_url: str) -> str | None:
+    parsed = urlparse(pr_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.hostname not in {"github.com", "www.github.com"}:
+        return None
+    if len(parts) < 4 or parts[2].lower() != "pull" or not parts[3].isdigit():
+        return None
+    owner = urllib.parse.quote(parts[0], safe="")
+    repository = urllib.parse.quote(parts[1], safe="")
+    return f"https://api.github.com/repos/{owner}/{repository}/pulls/{int(parts[3])}"
+
+
+def resolve_github_pr_author(pr_url: str, repo_root: Path | None = None) -> str | None:
+    """Resolve the PR author's GitHub login without making delivery mandatory."""
+
+    executable = resolve_executable("gh")
+    if executable:
+        try:
+            result = subprocess.run(
+                [executable, "pr", "view", pr_url, "--json", "author"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+            if result.returncode == 0:
+                payload = json.loads(result.stdout)
+                author = payload.get("author") if isinstance(payload, dict) else None
+                if isinstance(author, dict):
+                    login = _normalized_github_login(author.get("login"))
+                    if login:
+                        return login
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+    api_url = _github_pr_api_url(pr_url)
+    if not api_url:
+        return None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "codex-feishu-pr-review",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    user = payload.get("user") if isinstance(payload, dict) else None
+    return _normalized_github_login(user.get("login")) if isinstance(user, dict) else None
+
+
 class ReviewWorker(threading.Thread):
     def __init__(
         self,
@@ -146,12 +221,31 @@ class ReviewWorker(threading.Thread):
         *,
         pr_url: str | None = None,
         bot_key: str | None = None,
+        github_author: str | None = None,
     ) -> str:
         if not chat_id:
             return "skipped"
         job_bot_key = bot_key if bot_key is not None else getattr(self, "_current_bot_key", "")
         client = self.client_provider(job_bot_key)
         config = self.config_provider()
+        bot = config.bot(job_bot_key)
+        mention_open_ids: tuple[str, ...] = ()
+        mention_kind = "author"
+        if bot:
+            conclusion = review_conclusion(text)
+            if is_merge_ready_conclusion(conclusion):
+                mention_kind = "merge_maintainers"
+                repo_key = config.repo_key(pr_url) if pr_url else None
+                mention_open_ids = bot.merge_maintainer_open_ids(repo_key)
+            else:
+                author_open_id = bot.author_open_id(github_author)
+                mention_open_ids = (author_open_id,) if author_open_id else ()
+        fallback_text = notification_mention_text(
+            text,
+            mention_open_ids,
+            github_author,
+            mention_kind=mention_kind,
+        )
         if client is None:
             return "failed: bot configuration is missing or disabled"
         try:
@@ -162,30 +256,40 @@ class ReviewWorker(threading.Thread):
                         text,
                         config.max_feishu_text_length,
                         pr_url=pr_url,
+                        mention_open_ids=mention_open_ids,
+                        mention_kind=mention_kind,
+                        github_author=github_author,
                     )
                     return "sent_card"
                 except FeishuError as card_exc:
                     # Keep delivery reliable when an older tenant or an
                     # account policy rejects interactive cards.
                     LOGGER.warning("failed to send Feishu card, falling back to text: %s", card_exc)
-                    client.send_text(chat_id, text, config.max_feishu_text_length)
+                    client.send_text(chat_id, fallback_text, config.max_feishu_text_length)
                     return "sent_text_fallback"
-            client.send_text(chat_id, text, config.max_feishu_text_length)
+            client.send_text(chat_id, fallback_text, config.max_feishu_text_length)
             return "sent"
         except FeishuError as exc:
             LOGGER.error("failed to send Feishu message: %s", exc)
             return f"failed: {exc}"
 
-    def _send_job(self, job: dict[str, Any], text: str) -> str:
+    def _send_job(self, job: dict[str, Any], text: str, *, github_author: str | None = None) -> str:
         targets = self.store.delivery_targets(job["job_id"])
         if not targets:
-            return self._send(job.get("chat_id"), text, pr_url=job.get("pr_url"))
+            return self._send(
+                job.get("chat_id"),
+                text,
+                pr_url=job.get("pr_url"),
+                bot_key=job.get("bot_key"),
+                github_author=github_author,
+            )
         deliveries = [
             self._send(
                 target["chat_id"],
                 text,
                 pr_url=job.get("pr_url"),
                 bot_key=target["bot_key"],
+                github_author=github_author,
             )
             for target in targets
         ]
@@ -195,6 +299,21 @@ class ReviewWorker(threading.Thread):
         if failures:
             return f"partial_failure: {'; '.join(failures)}"
         return "sent_multiple"
+
+    def _github_author_for_delivery(self, job: dict[str, Any], repo_root: Path) -> str | None:
+        config = self.config_provider()
+        targets = self.store.delivery_targets(job["job_id"])
+        bot_keys = {str(target.get("bot_key") or "") for target in targets}
+        if not bot_keys:
+            bot_keys = {str(job.get("bot_key") or "")}
+        if not any((config.bot(bot_key).author_mappings if config.bot(bot_key) else {}) for bot_key in bot_keys):
+            return None
+        author = resolve_github_pr_author(str(job.get("pr_url") or ""), repo_root)
+        if author:
+            LOGGER.info("resolved GitHub author %s for job %s", author, job["job_id"])
+        else:
+            LOGGER.warning("unable to resolve GitHub author for job %s; sending without mention", job["job_id"])
+        return author
 
     @staticmethod
     def _delivery_succeeded(delivery: str) -> bool:
@@ -231,7 +350,7 @@ Skill 名称：review-pr-with-panel
 
 这不是 report-only 请求。对于有效的 GitHub PR URL，请遵循 Skill 的 GitHub 发布规则：共识或 A 终审确认的可行动检视意见应发布到 GitHub PR；`FINAL_BY_A` 意见必须披露 B 异议。能定位到当前 diff 行时发布行内意见，否则发布到 review body。不要自动 approve、request changes 或关闭线程。若已经存在历史检视结果，请按 Skill 的 finding lineage 与 follow-up 规则避免重复意见。
 
-任务结束时，请返回适合飞书回传的中文摘要。以下字段必须逐项明确给出：PR、review_id、mode（精确使用 INITIAL_REVIEW、FIX_VERIFICATION、INCREMENTAL_REREVIEW 或 NO_NEW_REVISION）、结论、发现数量（按 Critical/High/Medium/Low/Suggestion 分级）、主要发现摘要、GitHub 发布状态、未发布或阻塞原因（如有）。即使某项为空或数量为 0 也不要省略；不要只返回“已完成”。"""
+任务结束时，请返回适合飞书回传的中文摘要。以下字段必须逐项明确给出：PR、review_id、mode（精确使用 INITIAL_REVIEW、FIX_VERIFICATION、INCREMENTAL_REREVIEW 或 NO_NEW_REVISION）、结论、当前待处理发现数量（按 Critical/High/Medium/Low/Suggestion 分级）、主要发现摘要、GitHub 发布状态、未发布或阻塞原因（如有）。发现数量只能统计当前仍需行动的开放 finding；`FIX_VERIFIED` 和 `NO_ACTIONABLE_FINDINGS` 的当前待处理数量必须全部为 0。历史 finding 即使保留原严重级别，也必须另列为“历史已验证修复”，不得计入当前待处理发现数量。即使某项为空或数量为 0 也不要省略；不要只返回“已完成”。"""
 
     def execute(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
@@ -329,7 +448,8 @@ Skill 名称：review-pr-with-panel
             self._finish_failure(job, "Codex 没有返回可回传的检视摘要，请查看任务日志。")
             return
 
-        delivery = self._send_job(job, report)
+        github_author = self._github_author_for_delivery(job, repo_root)
+        delivery = self._send_job(job, report, github_author=github_author)
         status = "succeeded"
         error = None if self._delivery_succeeded(delivery) else delivery
         self.store.finish(
@@ -357,13 +477,19 @@ Skill 名称：review-pr-with-panel
             socket_path=config.codex_app_server_socket,
         )
         task_title = _pr_task_title(job["pr_url"], repo_root)
+        resume_thread_id = self.store.reusable_codex_thread_id(job_id, job["pr_url"])
 
         def on_pid(pid: int | None) -> None:
             self.store.set_pid(job_id, pid)
 
-        def on_thread_created(thread_id: str) -> None:
+        def on_thread_ready(thread_id: str, resumed: bool) -> None:
             self.store.set_codex_thread_id(job_id, thread_id)
-            LOGGER.info("job %s created Codex App thread %s", job_id, thread_id)
+            LOGGER.info(
+                "job %s %s Codex App thread %s",
+                job_id,
+                "resumed" if resumed else "created",
+                thread_id,
+            )
 
         result = None
         try:
@@ -376,9 +502,10 @@ Skill 名称：review-pr-with-panel
                 approval_policy=config.codex_approval_policy,
                 approvals_reviewer=config.codex_approvals_reviewer,
                 thread_name=task_title,
+                resume_thread_id=resume_thread_id,
                 should_cancel=lambda: self.store.is_cancel_requested(job_id),
                 on_pid=on_pid,
-                on_thread_created=on_thread_created,
+                on_thread_ready=on_thread_ready,
             )
         except CodexAppServerCancelled:
             report = "PR 检视任务已取消。"
@@ -398,7 +525,8 @@ Skill 名称：review-pr-with-panel
             self._finish_failure(job, "Codex app-server 没有返回可回传的检视摘要，请查看任务日志。")
             return
 
-        delivery = self._send_job(job, result.report)
+        github_author = self._github_author_for_delivery(job, repo_root)
+        delivery = self._send_job(job, result.report, github_author=github_author)
         status = "succeeded"
         error = None if self._delivery_succeeded(delivery) else delivery
         self.store.finish(
@@ -409,9 +537,10 @@ Skill 名称：review-pr-with-panel
             delivery_status=delivery,
         )
         LOGGER.info(
-            "job %s completed with app-server thread=%s delivery=%s",
+            "job %s completed with app-server thread=%s resumed=%s delivery=%s",
             job_id,
             result.thread_id,
+            result.resumed,
             delivery,
         )
 
@@ -478,8 +607,29 @@ class Gateway:
         with self._config_lock:
             return self.config
 
-    def config_signature(self) -> int | None:
-        return self._config_file_mtime()
+    def config_signature(self) -> tuple[tuple[Any, ...], ...]:
+        """Return only fields that require rebuilding Feishu connections.
+
+        Author and merge-maintainer mappings are delivery-time settings and
+        hot-reload safely. Using the config file mtime here rebuilt the SDK
+        WebSocket for every mapping edit, which can leave its process-global
+        event loop in a stale state.
+        """
+
+        config = self.current_config()
+        return tuple(
+            sorted(
+                (
+                    bot.key,
+                    bot.enabled,
+                    bot.transport,
+                    bot.app_id,
+                    bot.app_secret,
+                    bot.require_mention,
+                )
+                for bot in config.bots.values()
+            )
+        )
 
     def client_for(self, bot_key: str) -> FeishuClient | None:
         config = self.current_config()
@@ -553,6 +703,16 @@ class Gateway:
             return HTTPStatus.OK, {"ok": True, "duplicate": True}
 
         default_repo = config.default_repo_key()
+        if is_identity_request(event.text):
+            if not event.sender_id:
+                delivery = self._send_chat(bot, event.chat_id, "当前消息事件没有提供飞书 Open ID。")
+            else:
+                delivery = self._send_chat(
+                    bot,
+                    event.chat_id,
+                    f"你的飞书 Open ID：`{event.sender_id}`\n这个 ID 仅适用于机器人 `{bot.key}` 对应的飞书应用。",
+                )
+            return HTTPStatus.OK, {"ok": True, "identity": True, "delivery": delivery}
         if is_help_request(event.text):
             delivery = self._send_help(bot, event.chat_id)
             return HTTPStatus.OK, {"ok": True, "help": True, "delivery": delivery}

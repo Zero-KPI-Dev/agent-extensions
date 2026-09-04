@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,10 @@ from .feishu import FeishuEvent
 
 
 LOGGER = logging.getLogger("feishu-pr-review.long-connection")
+
+HEALTH_CHECK_INTERVAL_SECONDS = 5.0
+CONNECT_TIMEOUT_SECONDS = 120.0
+STALE_CONNECTION_SECONDS = 60.0
 
 
 class LongConnectionManager:
@@ -27,6 +32,8 @@ class LongConnectionManager:
             "available": None,
             "bots": [],
             "error": None,
+            "last_event_at": None,
+            "last_connected_at": None,
         }
 
     def start(self) -> None:
@@ -117,28 +124,44 @@ class LongConnectionManager:
                 async def on_message(message: Any, current_bot: BotConfig = bot) -> None:
                     event = self._event_from_message(current_bot, message)
                     if event is not None:
+                        self._set_status(last_event_at=time.time())
                         await asyncio.to_thread(self.gateway.enqueue_event, current_bot, event)
 
                 def on_error(error: Any, current_bot: BotConfig = bot) -> None:
                     LOGGER.error("机器人 %s 长连接错误：%s", current_bot.key, error)
 
+                def on_reconnecting(current_bot: BotConfig = bot) -> None:
+                    LOGGER.warning("机器人 %s 长连接正在重连", current_bot.key)
+                    self._set_status(state="reconnecting", error=None)
+
+                def on_reconnected(current_bot: BotConfig = bot) -> None:
+                    LOGGER.info("机器人 %s 长连接已恢复", current_bot.key)
+                    self._set_status(state="running", error=None, last_connected_at=time.time())
+
                 channel.on("message", on_message)
                 channel.on("error", on_error)
+                channel.on("reconnecting", on_reconnecting)
+                channel.on("reconnected", on_reconnected)
                 channels.append(channel)
                 connection_tasks.append(asyncio.create_task(channel.connect()))
 
-            self._set_status(state="running", bots=[bot.key for bot in bots], error=None)
-            watcher = asyncio.create_task(self._watch_config(initial_signature))
+            self._set_status(state="connecting", bots=[bot.key for bot in bots], error=None)
+            watcher = asyncio.create_task(self._watch_generation(channels, initial_signature))
             done, _ = await asyncio.wait(
                 [*connection_tasks, watcher],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            unexpected_exit = False
             for task in done:
                 if task.cancelled():
                     continue
                 error = task.exception()
                 if error:
                     LOGGER.error("长连接任务退出：%s", error)
+                if task is not watcher:
+                    unexpected_exit = True
+            if unexpected_exit and not self._stop_event.is_set():
+                await self._restart_gateway_when_idle("飞书长连接任务意外退出")
         finally:
             if watcher and not watcher.done():
                 watcher.cancel()
@@ -153,13 +176,70 @@ class LongConnectionManager:
             if not self._stop_event.is_set():
                 self._set_status(state="reconnecting", bots=[bot.key for bot in bots])
 
-    async def _watch_config(self, initial_signature: int | None) -> None:
+    async def _watch_generation(
+        self,
+        channels: list[Any],
+        initial_signature: tuple[tuple[Any, ...], ...],
+    ) -> None:
+        unhealthy_since: float | None = None
+        connected_once = False
+        generation_started_at = time.monotonic()
         while not self._stop_event.is_set():
-            await asyncio.sleep(2)
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
             self.gateway.current_config()
             if self.gateway.config_signature() != initial_signature:
-                LOGGER.info("检测到机器人配置变化，重建长连接")
+                await self._restart_gateway_when_idle("飞书连接配置已变化")
                 return
+
+            all_open = bool(channels) and all(self._channel_transport_open(channel) for channel in channels)
+            if all_open:
+                if not connected_once:
+                    LOGGER.info("飞书长连接传输已就绪")
+                connected_once = True
+                unhealthy_since = None
+                self._set_status(state="running", error=None, last_connected_at=time.time())
+                continue
+
+            if not connected_once:
+                self._set_status(state="connecting")
+                if time.monotonic() - generation_started_at >= CONNECT_TIMEOUT_SECONDS:
+                    await self._restart_gateway_when_idle("飞书 WebSocket 在启动超时内未连接")
+                    return
+                continue
+
+            if unhealthy_since is None:
+                unhealthy_since = time.monotonic()
+                self._set_status(state="reconnecting", error="WebSocket transport is not open")
+                continue
+            if time.monotonic() - unhealthy_since >= STALE_CONNECTION_SECONDS:
+                await self._restart_gateway_when_idle("飞书 WebSocket 持续不可用，准备由 launchd 重启网关")
+                return
+
+    async def _restart_gateway_when_idle(self, reason: str) -> None:
+        LOGGER.error("%s", reason)
+        self._set_status(state="restart_required", error=reason)
+        while not self._stop_event.is_set():
+            if self.gateway.store.pending_count() == 0 and self.gateway.store.running_count() == 0:
+                LOGGER.warning("队列已空，停止网关以触发 launchd 自动恢复长连接")
+                self.gateway.stop()
+                return
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+
+    @staticmethod
+    def _channel_transport_open(channel: Any) -> bool:
+        """Inspect the SDK transport because its public ready flag is sticky."""
+
+        ws_client = getattr(channel, "ws_client", None)
+        connection = getattr(ws_client, "_conn", None) if ws_client is not None else None
+        if connection is None:
+            return False
+        if getattr(connection, "closed", False) is True:
+            return False
+        state = getattr(connection, "state", None)
+        if state is None:
+            return True
+        state_name = str(getattr(state, "name", state)).upper()
+        return state_name == "OPEN" or state_name == "1"
 
     async def _disconnect_channels(self, channels: list[Any]) -> None:
         for channel in channels:

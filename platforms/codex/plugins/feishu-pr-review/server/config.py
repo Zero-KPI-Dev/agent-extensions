@@ -89,6 +89,14 @@ def resolve_executable(value: str) -> str | None:
         ):
             if fallback.is_file():
                 return str(fallback)
+    if raw == "gh":
+        for fallback in (
+            Path("/opt/homebrew/bin/gh"),
+            Path("/usr/local/bin/gh"),
+            Path.home() / ".local" / "bin" / "gh",
+        ):
+            if fallback.is_file():
+                return str(fallback)
     return None
 
 
@@ -331,9 +339,34 @@ class BotConfig:
     app_secret: str
     verification_token: str
     bot_open_id: str
+    author_mappings: dict[str, str] | None = None
+    merge_maintainers: dict[str, tuple[str, ...]] | None = None
     transport: str = "long_connection"
     require_mention: bool = True
     enabled: bool = True
+
+    def author_open_id(self, github_login: str | None) -> str | None:
+        """Resolve a GitHub author using IDs scoped to this Feishu app."""
+
+        login = str(github_login or "").strip().lstrip("@").lower()
+        if not login:
+            return None
+        return (self.author_mappings or {}).get(login)
+
+    def merge_maintainer_open_ids(self, repo_key: str | None) -> tuple[str, ...]:
+        """Resolve merge-ready result recipients for one repository.
+
+        Repository-specific recipients take precedence over the wildcard entry.
+        Open IDs remain scoped to this Feishu application, just like author
+        mappings.
+        """
+
+        mappings = self.merge_maintainers or {}
+        normalized_repo = str(repo_key or "").strip().lower()
+        recipients = mappings.get(normalized_repo) if normalized_repo else None
+        if recipients is None:
+            recipients = mappings.get("*", ())
+        return tuple(recipients)
 
     def public_summary(self) -> dict[str, Any]:
         return {
@@ -344,6 +377,8 @@ class BotConfig:
             "credentials_configured": bool(self.app_id and self.app_secret),
             "verification_token_configured": bool(self.verification_token),
             "bot_open_id_configured": bool(self.bot_open_id),
+            "author_mapping_count": len(self.author_mappings or {}),
+            "merge_maintainer_repo_count": len(self.merge_maintainers or {}),
             "require_mention": self.require_mention,
         }
 
@@ -379,6 +414,31 @@ def _load_bots(file_config: dict[str, Any]) -> dict[str, BotConfig]:
         transport = str(raw_value.get("transport", "long_connection")).strip().lower()
         if transport not in {"long_connection", "webhook"}:
             raise RuntimeError(f"机器人 {key} 的 transport 必须是 long_connection 或 webhook")
+        raw_author_mappings = raw_value.get("author_mappings", {})
+        if not isinstance(raw_author_mappings, dict):
+            raise RuntimeError(f"机器人 {key} 的 author_mappings 必须是 GitHub 用户名到飞书 Open ID 的 JSON 映射")
+        author_mappings = {
+            str(github_login).strip().lstrip("@").lower(): str(open_id).strip()
+            for github_login, open_id in raw_author_mappings.items()
+            if str(github_login).strip().lstrip("@") and str(open_id).strip()
+        }
+        raw_merge_maintainers = raw_value.get("merge_maintainers", {})
+        if not isinstance(raw_merge_maintainers, dict):
+            raise RuntimeError(
+                f"机器人 {key} 的 merge_maintainers 必须是仓库 key 到飞书 Open ID 列表的 JSON 映射"
+            )
+        merge_maintainers: dict[str, tuple[str, ...]] = {}
+        for raw_repo_key, raw_open_ids in raw_merge_maintainers.items():
+            repo_key = str(raw_repo_key).strip().lower()
+            if repo_key != "*" and repo_key.count("/") != 1:
+                raise RuntimeError(f"机器人 {key} 的 merge_maintainers 仓库 key 必须是 owner/repo 或 *")
+            if not isinstance(raw_open_ids, list):
+                raise RuntimeError(f"机器人 {key} 的 merge_maintainers[{repo_key}] 必须是飞书 Open ID 列表")
+            open_ids = tuple(
+                dict.fromkeys(str(open_id).strip() for open_id in raw_open_ids if str(open_id).strip())
+            )
+            if open_ids:
+                merge_maintainers[repo_key] = open_ids
         bots[key] = BotConfig(
             key=key,
             display_name=str(raw_value.get("display_name", key)),
@@ -388,6 +448,8 @@ def _load_bots(file_config: dict[str, Any]) -> dict[str, BotConfig]:
             app_secret=str(raw_value.get("app_secret", raw_value.get("feishu_app_secret", ""))),
             verification_token=str(raw_value.get("verification_token", raw_value.get("feishu_verification_token", ""))),
             bot_open_id=str(raw_value.get("bot_open_id", raw_value.get("feishu_bot_open_id", ""))),
+            author_mappings=author_mappings,
+            merge_maintainers=merge_maintainers,
             transport=transport,
             require_mention=_bool(raw_value.get("require_mention", True), True),
             enabled=_bool(raw_value.get("enabled", True), True),

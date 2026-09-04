@@ -20,6 +20,36 @@ PR_NUMBER_RE = re.compile(
     re.IGNORECASE,
 )
 MENTION_TOKEN_RE = re.compile(r"(?:@_user_\d+|<at\b[^>]*>.*?</at>|@[A-Za-z0-9_.-]+)", re.IGNORECASE)
+FEISHU_OPEN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+MERGE_READY_CONCLUSIONS = frozenset(
+    {
+        "FIXED_VERIFIED",
+        "FIX_VERIFIED",
+        "NO_ACTIONABLE_FINDINGS",
+    }
+)
+REVIEW_CONCLUSIONS = (
+    "FIXED_VERIFIED",
+    "FIX_VERIFIED",
+    "PARTIALLY_FIXED",
+    "FINAL_BY_A",
+    "DISPUTED_OPEN",
+    "UNVERIFIABLE",
+    "NO_ACTIONABLE_FINDINGS",
+    "ACTION_REQUIRED",
+    "NO_NEW_REVISION",
+    "FAILED",
+    "CANCELLED",
+    "PASSED",
+)
+
+
+def _normalize_review_conclusion(value: str | None) -> str:
+    upper = str(value or "").upper()
+    for candidate in REVIEW_CONCLUSIONS:
+        if re.search(rf"(?<![A-Z0-9_]){candidate}(?![A-Z0-9_])", upper):
+            return candidate
+    return ""
 
 
 class FeishuError(RuntimeError):
@@ -162,6 +192,21 @@ def is_help_request(text: str) -> bool:
     )
 
 
+def is_identity_request(text: str) -> bool:
+    """Return whether the sender is asking for their app-scoped Feishu ID."""
+
+    cleaned = MENTION_TOKEN_RE.sub(" ", text).strip()
+    normalized = re.sub(r"[\s?？!！,，。:：/\-_]+", "", cleaned).lower()
+    return normalized in {
+        "openid",
+        "我的openid",
+        "飞书openid",
+        "我的飞书openid",
+        "我的飞书id",
+        "我的用户id",
+    }
+
+
 def split_text(text: str, max_length: int) -> list[str]:
     max_length = max(200, max_length)
     if len(text) <= max_length:
@@ -179,6 +224,58 @@ def split_text(text: str, max_length: int) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _mention_open_ids(
+    open_id: str | None = None,
+    open_ids: list[str] | tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    candidates = list(open_ids or ())
+    if open_id:
+        candidates.insert(0, open_id)
+    return tuple(
+        dict.fromkeys(
+            normalized
+            for candidate in candidates
+            if FEISHU_OPEN_ID_RE.fullmatch(normalized := str(candidate or "").strip())
+        )
+    )
+
+
+def notification_mention_text(
+    text: str,
+    open_ids: list[str] | tuple[str, ...] | None,
+    github_login: str | None = None,
+    *,
+    mention_kind: str = "author",
+) -> str:
+    """Prefix a plain-text result with one or more safe Feishu mentions."""
+
+    normalized_open_ids = _mention_open_ids(open_ids=open_ids)
+    if not normalized_open_ids:
+        return text
+    if mention_kind == "merge_maintainers":
+        mentions = " ".join(
+            f'<at user_id="{open_id}">合入者</at>' for open_id in normalized_open_ids
+        )
+        conclusion = review_conclusion(text)
+        if conclusion == "NO_ACTIONABLE_FINDINGS":
+            notice = "PR 检视未发现待处理问题；请结合 required checks 最终状态评估合入。"
+        else:
+            notice = "PR 修复已验证，当前无待处理检视意见；请结合 required checks 最终状态评估合入。"
+        return f"{mentions} {notice}\n\n{text}"
+    label = str(github_login or "PR 作者").strip().lstrip("@") or "PR 作者"
+    label = re.sub(r"[^A-Za-z0-9_.\-\[\]]", "", label) or "PR 作者"
+    mentions = " ".join(
+        f'<at user_id="{open_id}">{label}</at>' for open_id in normalized_open_ids
+    )
+    return f"{mentions} PR 检视已完成，请查收。\n\n{text}"
+
+
+def author_mention_text(text: str, open_id: str | None, github_login: str | None = None) -> str:
+    """Backward-compatible single-author plain-text mention helper."""
+
+    return notification_mention_text(text, [open_id] if open_id else [], github_login)
 
 
 def _clip_card_text(value: str, max_length: int = 1600) -> str:
@@ -503,6 +600,16 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
             new_summary=new_summary,
         )
 
+    conclusion_token = _normalize_review_conclusion(conclusion)
+    if conclusion_token in {"FIXED_VERIFIED", "FIX_VERIFIED"} and not new_summary:
+        if not any(historical_counts.values()):
+            historical_counts = dict(counts)
+        counts = {}
+        new_counts = {}
+    elif conclusion_token == "NO_ACTIONABLE_FINDINGS" and not new_summary:
+        counts = {}
+        new_counts = {}
+
     other = _unique_nonempty(other)
     findings = _unique_nonempty(findings)
 
@@ -535,6 +642,18 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
         "findings": [_clip_card_text(item, 1000) for item in findings[:5]],
         "other": [_clip_card_text(item, 1000) for item in other[:4]],
     }
+
+
+def review_conclusion(report: str) -> str:
+    """Return the normalized lifecycle conclusion used for notification routing."""
+
+    return _normalize_review_conclusion(str(_report_card_data(report).get("conclusion") or ""))
+
+
+def is_merge_ready_conclusion(conclusion: str | None) -> bool:
+    """Return whether the final result should notify repository mergers."""
+
+    return str(conclusion or "").strip().upper() in MERGE_READY_CONCLUSIONS
 
 
 def _card_div(content: str) -> dict[str, Any]:
@@ -582,6 +701,7 @@ def build_help_text(
         [
             "可以在同一条消息中补充关注点。",
             "机器人会在后台运行 Leader + A/B 独立复核，完成后回传结果，并按 Skill 规则发布 GitHub 检视意见。",
+            "管理员配置人员映射后，待处理结果会自动 @PR 作者；NO_ACTIONABLE_FINDINGS、FIX_VERIFIED 等可合入结论会 @仓库合入者。发送“@机器人 我的 Open ID”可查询映射所需的飞书 Open ID。",
             "再次查看本帮助：@机器人 help、帮助或怎么用。",
         ]
     )
@@ -636,6 +756,12 @@ def build_help_card(
                 "**执行方式**\n"
                 "后台运行 **Leader + A/B 独立复核**；完成后回传结果，"
                 "并按 Skill 规则将共识或 A 终审确认的可行动意见发布到 GitHub PR。"
+            ),
+            _card_div(
+                "**作者提醒**\n"
+                "管理员配置 GitHub 作者映射后，普通结果会自动 **@PR 作者**；"
+                "修复验证通过时可改为 **@仓库合入者**。"
+                "发送 `@机器人 我的 Open ID` 可查看当前应用下自己的飞书 Open ID。"
             ),
             {"tag": "hr"},
             _card_div("再次查看本帮助：只需 **@本机器人**，或发送 `help`、`帮助`、`怎么用`。"),
@@ -718,12 +844,21 @@ def build_ack_card(
     }
 
 
-def build_review_card(report: str, pr_url: str | None = None, max_length: int = 3500) -> dict[str, Any]:
+def build_review_card(
+    report: str,
+    pr_url: str | None = None,
+    max_length: int = 3500,
+    *,
+    mention_open_id: str | None = None,
+    mention_open_ids: list[str] | tuple[str, ...] | None = None,
+    mention_kind: str = "author",
+    github_author: str | None = None,
+) -> dict[str, Any]:
     """Build a compact legacy interactive card accepted by the IM v1 API."""
     data = _report_card_data(report, pr_url=pr_url)
     first_line = _card_lines(report)[0].lower() if _card_lines(report) else ""
     conclusion = str(data.get("conclusion") or "")
-    normalized_conclusion = conclusion.upper()
+    normalized_conclusion = _normalize_review_conclusion(conclusion)
     is_clean_conclusion = normalized_conclusion in {
         "FIXED_VERIFIED",
         "FIX_VERIFIED",
@@ -816,7 +951,12 @@ def build_review_card(report: str, pr_url: str | None = None, max_length: int = 
     else:
         outcome = "✅ **未发现待处理问题**"
 
-    if data["history_summary"] or data["new_summary"]:
+    if (
+        data["history_summary"]
+        or data["new_summary"]
+        or any(historical_counts.values())
+        or any(new_counts.values())
+    ):
         overview_lines = [outcome, "", "**严重级别**"]
         if data["new_summary"] or any(new_counts.values()):
             overview_lines.append(f"**本轮新增**　{format_counts(new_counts)}")
@@ -829,7 +969,33 @@ def build_review_card(report: str, pr_url: str | None = None, max_length: int = 
     else:
         overview = f"{outcome}\n\n**严重级别**\n{format_counts(counts)}"
 
-    elements: list[dict[str, Any]] = [_card_div(_clip_card_text(metadata, max_length)), {"tag": "hr"}, _card_div(overview)]
+    elements: list[dict[str, Any]] = []
+    normalized_open_ids = _mention_open_ids(mention_open_id, mention_open_ids)
+    if normalized_open_ids:
+        mentions = "　".join(f"<at id={open_id}></at>" for open_id in normalized_open_ids)
+        if mention_kind == "merge_maintainers":
+            if normalized_conclusion == "NO_ACTIONABLE_FINDINGS":
+                notification = (
+                    f"{mentions} PR 检视未发现待处理问题；"
+                    "请结合 required checks 最终状态评估合入。"
+                )
+            else:
+                notification = (
+                    f"{mentions} PR 修复已验证，当前无待处理检视意见；"
+                    "请结合 required checks 最终状态评估合入。"
+                )
+        else:
+            author_label = str(github_author or "").strip().lstrip("@")
+            author_label = re.sub(r"[^A-Za-z0-9_.\-\[\]]", "", author_label)
+            author_suffix = f"（GitHub: `{author_label}`）" if author_label else ""
+            notification = f"{mentions}{author_suffix} PR 检视已完成，请查收。"
+        elements.extend(
+            [
+                _card_div(notification),
+                {"tag": "hr"},
+            ]
+        )
+    elements.extend([_card_div(_clip_card_text(metadata, max_length)), {"tag": "hr"}, _card_div(overview)])
 
     publish_status = data["publish_status"]
     publish_detail = data["publish_detail"]
@@ -962,10 +1128,22 @@ class FeishuClient:
         max_length: int = 3500,
         *,
         pr_url: str | None = None,
+        mention_open_id: str | None = None,
+        mention_open_ids: list[str] | tuple[str, ...] | None = None,
+        mention_kind: str = "author",
+        github_author: str | None = None,
     ) -> list[dict[str, Any]]:
         token = self.tenant_access_token()
         query = urllib.parse.urlencode({"receive_id_type": "chat_id"})
-        card = build_review_card(report, pr_url=pr_url, max_length=max_length)
+        card = build_review_card(
+            report,
+            pr_url=pr_url,
+            max_length=max_length,
+            mention_open_id=mention_open_id,
+            mention_open_ids=mention_open_ids,
+            mention_kind=mention_kind,
+            github_author=github_author,
+        )
         return [
             self._request(
                 "POST",

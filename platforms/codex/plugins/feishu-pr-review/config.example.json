@@ -12,6 +12,17 @@
       "app_secret": "replace_me",
       "verification_token": "",
       "bot_open_id": "",
+      "author_mappings": {
+        "github-login": "ou_replace_with_user_open_id"
+      },
+      "merge_maintainers": {
+        "*": [
+          "ou_replace_with_merge_maintainer_open_id"
+        ],
+        "owner/repo": [
+          "ou_repo_specific_merge_maintainer"
+        ]
+      },
       "require_mention": true,
       "enabled": true
     }

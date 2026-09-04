@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from server.config import BotConfig
-from server.feishu import FeishuEvent, build_help_card, build_help_text, is_help_request
+from server.feishu import FeishuEvent, build_help_card, build_help_text, is_help_request, is_identity_request
 from server.gateway import Gateway
 
 
@@ -50,6 +50,10 @@ class HelpIntentTests(unittest.TestCase):
     def test_unrelated_message_is_not_explicit_help(self) -> None:
         self.assertFalse(is_help_request("@_user_1 今天天气怎么样"))
 
+    def test_sender_can_request_application_scoped_open_id(self) -> None:
+        self.assertTrue(is_identity_request("@_user_1 我的 Open ID"))
+        self.assertFalse(is_identity_request("@_user_1 帮助"))
+
     def test_gateway_help_route_does_not_create_review_job(self) -> None:
         gateway = Gateway.__new__(Gateway)
         gateway.store = _HelpStore()
@@ -81,6 +85,38 @@ class HelpIntentTests(unittest.TestCase):
         self.assertTrue(result["help"])
         self.assertEqual(result["delivery"], "sent_card")
 
+    def test_gateway_identity_route_returns_sender_open_id_without_creating_job(self) -> None:
+        gateway = Gateway.__new__(Gateway)
+        gateway.store = _HelpStore()
+        gateway.current_config = lambda: _HelpConfig()
+        sent: list[str] = []
+        gateway._send_chat = lambda _bot, _chat_id, text: sent.append(text) or "sent"
+        bot = BotConfig(
+            key="pr-review",
+            display_name="PR Review",
+            event_path="/events",
+            feishu_base_url="https://open.feishu.cn",
+            app_id="app",
+            app_secret="secret",
+            verification_token="",
+            bot_open_id="bot",
+        )
+        event = FeishuEvent(
+            event_id="event-identity",
+            event_type="im.message.receive_v1",
+            chat_id="chat",
+            message_id="message",
+            sender_id="ou_sender",
+            text="@_user_1 我的 Open ID",
+            mentioned_bot=True,
+        )
+
+        status, result = gateway.enqueue_event(bot, event)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(result["identity"])
+        self.assertIn("ou_sender", sent[0])
+
 
 class HelpCardTests(unittest.TestCase):
     def test_default_repo_card_shows_shortcuts_and_behavior(self) -> None:
@@ -95,6 +131,7 @@ class HelpCardTests(unittest.TestCase):
         self.assertIn("tech-innovation-group/echomem", content)
         self.assertIn("检视 #314", content)
         self.assertIn("Leader + A/B 独立复核", content)
+        self.assertIn("我的 Open ID", content)
         self.assertIn("help", content)
 
     def test_multiple_repos_without_default_require_full_url(self) -> None:

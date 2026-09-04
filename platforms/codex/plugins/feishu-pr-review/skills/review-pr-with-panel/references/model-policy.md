@@ -26,7 +26,9 @@ reasoning_effort: <requested effort>
 
 A/B prompt 必须自包含仓库、范围、base/head、run context、证据包和输出契约。不得省略 `fork_turns` 或使用 `fork_turns: "all"` 后同时传模型；那会导致覆盖被拒绝或继承父模型，也会把整段 Leader 历史复制给子 Agent，增加 token。
 
-当 `spawn_agent` 元数据列出 `gpt-5.6-luna` 及所需 reasoning 时，必须先按原请求真实调用 Luna。不得仅根据“似乎不可用”、旧记录或其他工具的模型清单提前写成 Terra。调用成功即记录该请求为 effective；若运行时另行返回实际模型则以其为准。只有当前调用明确返回 unsupported/unavailable 才能降级；若无法确认实际模型，记录 `effective: UNKNOWN`，不得编造。
+当 `spawn_agent` 元数据列出 `gpt-5.6-luna` 及所需 reasoning 时，必须先按原请求真实调用 Luna。不得仅根据“似乎不可用”、旧记录或其他工具的模型清单提前写成 Terra。显式模型与 reasoning 调用成功且没有模型覆盖、降级或拒绝错误时，记录 `effective=requested`；若运行时另行返回不同的实际组合，则以运行时结果为准。只有当前调用明确返回 unsupported/unavailable 才能降级。只有调用结果本身无法确认任何执行组合时才使用 `effective: UNKNOWN`，并把它视为执行信息不完整，而不是正常成功路径。
+
+人类可读报告不要输出 `UNKNOWN / UNKNOWN` 占位。成功且 `effective=requested` 时只显示请求组合并标注“已按请求执行”；只有实际组合不同或发生降级时才显示 `requested → effective`。若执行信息确实不完整，使用中文说明原因，不要用两个 `UNKNOWN` 让读者误以为模型未运行。
 
 ## Leader 决策矩阵
 

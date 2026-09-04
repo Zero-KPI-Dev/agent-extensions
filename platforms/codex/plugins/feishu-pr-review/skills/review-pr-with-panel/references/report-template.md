@@ -15,7 +15,9 @@ Leader 必须按以下固定顺序生成一份最终 Markdown 报告。A/B 的 J
 - 每个 finding 使用稳定的 `finding_id`，复检只更新状态和 revision，不改成新的 ID。
 - 事实与推断分开标注；位置优先使用指向当前 head 的 GitHub permalink。
 - `NO_ACTIONABLE_FINDINGS` 不等于绝对无缺陷，必须说明覆盖范围和局限。
+- 面向用户或调用方的严重级别总数只统计当前仍需行动的开放 finding；`FIXED_VERIFIED`、`OBSOLETE` 等历史关闭项保留原级别时必须另列为“历史已验证修复”。`FIX_VERIFIED` 和 `NO_ACTIONABLE_FINDINGS` 的当前待处理数量必须全部为 0。
 - `INITIAL_REVIEW` 使用完整模板。`FIX_VERIFICATION` 和 `INCREMENTAL_REREVIEW` 默认使用后文的复检紧凑模板；只展开未关闭、证据不足或通过 High/Critical 新增意见门禁的项目，不复述旧 finding 全文。
+- 复检的 `publish_status` 不能只由 actionable finding 数量决定。若 GitHub 最近发布的 lifecycle 与本轮不同，尤其从非终态迁移为 `FIXED_VERIFIED`，应记录为 `PUBLISHED` 或真实的 `FAILED`；只有状态未变化、同一 `review_id` 已发布或 `NO_NEW_REVISION` 时才记录 `SKIPPED`。
 
 ## 状态值
 
@@ -65,6 +67,8 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 | Current head | `{{current_head}}` |
 | GitHub 发布 | `{{publish_status}}`；{{published_review_url_or_none}} |
 | 模式依据 | {{Leader 的历史和 Git 判断依据}} |
+| 部署拓扑 | `{{single_node | distributed | both | unknown}}`；受影响组件：{{affected_components_or_none}} |
+| 分布式影响 | `{{NONE | SAFE_WITH_EVIDENCE | RISK_IDENTIFIED | UNVERIFIED}}`；{{关键依据、已检查风险面和多副本验证限制}} |
 | 局限 | {{未覆盖内容、缺失环境或证据限制}} |
 
 ## Finding 汇总
@@ -119,14 +123,19 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 ## 协作记录
 
+无论首检还是复检，协作记录都必须使用下方 Markdown 表格，不得压缩成单行文本。展示模型组合时遵循：成功且 `effective=requested` 写为 `` `model / reasoning`（已按请求执行）``；只有发生覆盖或降级时才写 `` `requested` → `effective` `` 并给出原因。人类可读报告不显示 `UNKNOWN / UNKNOWN`；执行信息确实缺失时改用中文说明具体缺口。
+
+epoch、lease、heartbeat、settle、cancel 和 packet 校验过程属于内部调度日志，正常完成时不要写入协作记录。只有它们确实降低了结论可靠性或导致失败时，才增加一行“运行异常 / 局限”，用一句面向用户的中文说明影响，不展开内部时序。
+
 | 项目 | 内容 |
 |---|---|
-| Agent A | `{{requested_model}} / {{requested_reasoning}}` → `{{effective_model}} / {{effective_reasoning}}` |
-| Agent B | `{{requested_model}} / {{requested_reasoning}}` → `{{effective_model}} / {{effective_reasoning}}` |
+| Agent A | {{agent_a_model_execution_summary}} |
+| Agent B | {{agent_b_model_execution_summary}} |
 | Agent fork | `fork_turns={{none}}`；{{model_override_error_or_none}} |
 | Profile | `{{quality | balanced | economy | custom}}` |
 | 使用轮数 | `{{rounds}}` |
 | Leader 选择理由 | {{模型、推理强度和模式选择理由。}} |
+| GitHub 发布 | `{{publish_status}}` · `{{COMMENT_or_none}}` · inline `{{inline_count}}` |
 ```
 
 ## 复检紧凑模板
@@ -153,7 +162,7 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 ## 检视范围
 
-`{{previous_head}}..{{current_head}}`；仅验证 `{{finding_ids}}` 的原触发路径、关闭条件和直接回归。局限：{{limitations_or_none}}。
+`{{previous_head}}..{{current_head}}`；仅验证 `{{finding_ids}}` 的原触发路径、关闭条件和直接回归。部署拓扑：`{{topology}}`；分布式影响：`{{distributed_impact}}`；受影响组件：{{affected_components_or_none}}。局限：{{limitations_or_none}}。
 
 ## Finding 汇总
 
@@ -169,5 +178,13 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 ## 协作记录
 
-`A {{effective_model}}/{{effective_reasoning}}`；`B {{effective_model}}/{{effective_reasoning}}`；`fork_turns=none`；profile `{{profile}}`；{{rounds}} 轮。GitHub：{{publish_status}}。
+| 项目 | 内容 |
+|---|---|
+| Agent A | {{agent_a_model_execution_summary_or_not_started}} |
+| Agent B | {{agent_b_model_execution_summary_or_not_started}} |
+| Agent fork | `fork_turns={{none_or_not_started}}`；{{model_override_error_or_none}} |
+| Profile | `{{profile_or_none}}` |
+| 使用轮数 | `{{rounds}}` |
+| Leader 选择理由 | {{模型、推理强度和模式选择理由；NO_NEW_REVISION 时说明未启动 A/B。}} |
+| GitHub 发布 | `{{publish_status}}` · `{{COMMENT_or_none}}` · inline `{{inline_count}}` |
 ```

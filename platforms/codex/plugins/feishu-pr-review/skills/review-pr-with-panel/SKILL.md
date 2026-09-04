@@ -13,21 +13,23 @@ description: >
 不要在启动时无条件加载所有 reference。
 
 1. 先读 `references/review-modes.md`，确定模式并检查是否为 `NO_NEW_REVISION`。
-2. 仅当需要启动 A/B 时，读 `references/runtime-coordination.md` 和 `references/model-policy.md`。`INITIAL_REVIEW` 读 `references/review-contract.md`；复检读更短的 `references/fix-verification-contract.md`，只有门禁通过的新候选需要完整 Finding 字段时才再读 `references/review-contract.md`。
-3. 在启动 A 前读 `references/agent-a.md`；A packet 通过门禁后、启动 B 前再读 `references/agent-b.md`。
-4. 仅在生成最终报告时读 `references/report-template.md`。
-5. 仅在输入含可解析的 GitHub PR URL 且允许发布时读 `references/github-publish.md`。
+2. 根据代码、部署配置和架构文档建立 `deployment_context`。目标存在多副本、多进程路由、共享控制面/存储、租约/分片/异步接管，或变更可能影响这些边界时，完整读取 `references/distributed-deployment-review.md`。EchoMem 中会影响运行时行为的 PR 默认按当前 CCE 分布式拓扑执行该检查；纯文档、测试数据或明确不进入运行时的变更可以记录证据后标为无分布式影响。
+3. 仅当需要启动 A/B 时，读 `references/runtime-coordination.md` 和 `references/model-policy.md`。`INITIAL_REVIEW` 读 `references/review-contract.md`；复检读更短的 `references/fix-verification-contract.md`，只有门禁通过的新候选需要完整 Finding 字段时才再读 `references/review-contract.md`。
+4. 在启动 A 前读 `references/agent-a.md`；A packet 通过门禁后、启动 B 前再读 `references/agent-b.md`。
+5. 仅在生成最终报告时读 `references/report-template.md`。
+6. 仅在输入含可解析的 GitHub PR URL 且允许发布时读 `references/github-publish.md`。
 
 选中某个 reference 后完整读取。`NO_NEW_REVISION` 不启动 A/B，也不加载 Agent、模型和 runtime 细则。
 
 ## 确认对象与历史
 
 1. 用只读 Git 检查确认仓库绝对路径、base、当前 head、授权变更集、排除项和用户关注点。
-2. 有历史检视时，优先复用最近一轮机器可读的 `review_id`、repository、base/head、finding_id、revision、状态和关键证据；不要把整段会话或完整旧报告重复放进 Agent prompt。
-3. 用 `previous_head..current_head` 判断变更是否针对旧 finding、是否有独立新增范围，以及旧触发路径是否仍能映射。
-4. 缺少可靠 SHA、仓库身份或 finding_id 时，不凭“之前看过”自动关闭旧 finding。
-5. 只检视用户授权的变更。可以读取未改动代码验证调用链，但不得混入无关旧问题。
-6. 不修改代码、不提交代码；只有 GitHub 自动发布规则允许外部写入。
+2. 从仓库内的部署清单、配置和架构文档识别实际运行拓扑、状态权威、路由/所有权键、本地与共享状态、故障接管和滚动升级边界；不要因当前 diff 未修改部署文件就假设单机语义。
+3. 有历史检视时，优先复用最近一轮机器可读的 `review_id`、repository、base/head、finding_id、revision、状态、关键证据和 `deployment_context`；不要把整段会话或完整旧报告重复放进 Agent prompt。
+4. 用 `previous_head..current_head` 判断变更是否针对旧 finding、是否有独立新增范围，以及旧触发路径和跨副本路径是否仍能映射。
+5. 缺少可靠 SHA、仓库身份或 finding_id 时，不凭“之前看过”自动关闭旧 finding。
+6. 只检视用户授权的变更。可以读取未改动代码验证调用链、部署拓扑和跨副本交互，但不得混入无关旧问题。
+7. 不修改代码、不提交代码；只有 GitHub 自动发布规则允许外部写入。
 
 ### GitHub PR task 命名
 
@@ -48,6 +50,7 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 - 旧 finding 的 ID、revision、原触发路径、预期行为、严重级别和关闭条件；
 - previous/current head 与只关联该 finding 的 changed hunks、当前符号和定向测试；
+- 若原 finding 或修复涉及分布式边界，加入最小 `deployment_context`、相关副本/组件、所有权或一致性不变量，以及故障/滚动升级触发路径；
 - 必要的调用者、防护和未决问题。
 
 默认不传完整旧报告、完整会话、无关文件或整个旧/新源码快照。只有无法验证原路径时才按需扩读；不要因为“可能有用”扩大范围。
@@ -82,7 +85,7 @@ Leader 按 `references/review-modes.md` 独立选择：
 ### 首次检视
 
 1. A 读取授权 diff，返回 `A_INITIAL`。
-2. A packet 通过质量门禁后，B 使用相同代码基准独立验证并返回 `B_VERIFICATION`。
+2. A packet 通过质量门禁后，B 使用相同代码基准和 `deployment_context` 独立验证并返回 `B_VERIFICATION`；分布式影响不能只复述 A 的判断。
 3. 仅把有实质分歧的 finding、B 的最强反证和具体问题发回同一个 A。A 必须直接回应反证，并填写可审计的最终技术立场。
 4. 若 A 接受 B 的修订则形成共识；若 A 已明确回应 B 的反证并维持结论，且 B 没有新的实质证据，立即按 contract 以 A 的终审立场收束并保留 B 异议。
 5. 只有出现新的实质证据才继续下一轮 `B → A`。最多三轮是新证据持续出现时的安全上限，不是形成 `FINAL_BY_A` 的前置条件；A 未回应决定性反证或主动要求补证时保持 `DISPUTED`。
@@ -99,12 +102,16 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 ## 报告与 GitHub 发布
 
-按 `references/report-template.md` 生成 GitHub 可渲染 Markdown。首检使用完整 finding 模板；复检使用紧凑生命周期表，只展开未关闭、证据不足或通过新增意见门禁的项目。保留机器可读 lineage 和五个固定章节。
+按 `references/report-template.md` 生成 GitHub 可渲染 Markdown。首检使用完整 finding 模板；复检使用紧凑生命周期表，只展开未关闭、证据不足或通过新增意见门禁的项目。保留机器可读 lineage 和五个固定章节，并在检视范围中明确记录部署拓扑、受影响组件、分布式风险面结论和未验证限制。
+
+任何面向用户或调用方的摘要中，严重级别数量只统计当前仍需行动的开放 finding。已进入 `FIXED_VERIFIED`、`OBSOLETE` 等关闭状态的历史 finding 必须另列为“历史已验证修复”，不得计入当前待处理数量；因此顶层结论为 `FIX_VERIFIED` 或 `NO_ACTIONABLE_FINDINGS` 时，当前 Critical/High/Medium/Low/Suggestion 数量必须全部为 0。
 
 对有效 GitHub PR URL，且用户未要求只读/仅报告时，按 `references/github-publish.md` 自动发布：
 
 - 发布已达成一致，或满足 A 终审发布门禁的 actionable finding，默认 action 为 `COMMENT`；A 终审意见必须在评论中披露 B 的异议；
 - 复检不得为重述旧意见创建新的 inline comment；旧 finding 只在 review body 更新生命周期；
+- 复检时，若旧 finding 相对 GitHub 最近一份机器可读 review 发生实质生命周期变化，必须发布新的 `COMMENT` review body；尤其从 `PARTIALLY_FIXED`、`NOT_FIXED`、`UNVERIFIABLE` 等非终态迁移为 `FIXED_VERIFIED` 时，即使当前 actionable finding 为 0 也必须发布，inline 保持 0；
+- “没有 actionable finding”不能覆盖上述生命周期发布义务。只有 GitHub 已记录相同 head 与相同 lifecycle 状态，或模式为 `NO_NEW_REVISION` 时，才因无变化而跳过；
 - 只有通过复检新增意见门禁的 High/Critical 新问题或回归才可新增 inline；
 - 不自动批准、请求修改或关闭旧 thread；发布失败要报告真实状态。
 

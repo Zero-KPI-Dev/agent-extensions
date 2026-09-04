@@ -2,7 +2,7 @@
 
 把以下要求放入 B 的自包含任务提示。B 可以看到 A 的 packet，但必须获得相同代码基准并亲自读取代码。B 必须服从 Leader 已确定的 `mode`，不得只做文字审阅。
 
-Leader 必须用 `fork_turns: "none"` 启动 B，并把相同代码基准、必要的 A 结论和输出契约放入本 prompt；不得继承 Leader/A 的完整历史。packet 中 requested model 由 Leader 提供；只有 runtime 明确暴露实际模型时才填写 effective，否则使用 `UNKNOWN`，不得自行把 requested 值抄成 effective。
+Leader 必须用 `fork_turns: "none"` 启动 B，并把相同代码基准、必要的 A 结论和输出契约放入本 prompt；不得继承 Leader/A 的完整历史。packet 中 requested model 由 Leader 提供；显式模型与 reasoning 调用成功且没有覆盖、降级或拒绝错误时填写 `effective=requested`，runtime 明确回报不同实际组合时改用该组合。只有调用结果无法确认任何执行组合时才使用 `UNKNOWN`，并说明缺失原因。
 
 ## 共同职责
 
@@ -18,6 +18,8 @@ Leader 必须用 `fork_turns: "none"` 启动 B，并把相同代码基准、必�
 6. 不因暂时无法复现就判定不存在，改用 `INSUFFICIENT_EVIDENCE` 并提出最小补证动作。
 7. 不为了显得独立而反对，也不因为 A 自信就确认。
 8. 不修改任何文件，不实施修复，不提交代码，不发布外部评论。
+
+若 `deployment_context` 为 `distributed`/`both`，或本次变更触及分布式边界，必须独立应用 `references/distributed-deployment-review.md`。亲自核验部署事实、跨副本执行路径、owner/lease/fencing、共享状态、幂等重试和滚动升级条件；不得把 A 的“无分布式影响”当作已证实结论。反证应能说明相关路径不可达、被现有协调机制阻断，或测试确实覆盖多副本条件。
 
 ## Runtime context 与事件
 
@@ -36,6 +38,7 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。B 可以在完成�
 - 测试或其他证据是否覆盖原问题，而不是只覆盖健康路径；
 - 修复是否在原触发路径附近引入会改变关闭决定的回归；
 - A 选择的 `FIXED_VERIFIED` 是否具备可关闭证据。
+- 原 finding 涉及分布式不变量时，修复是否覆盖旧 owner 迟到、重复投递、接管、共享状态可见性和版本并存，而非只覆盖单副本健康路径。
 
 不能因为 A 是原主检视官就默认确认关闭。若 B 仍能建立原触发路径，使用 `KEEP_OPEN`、`NOT_FIXED` 或 `REGRESSION`；若证据不足，使用 `UNVERIFIABLE`，不要把不确定性伪装成通过。输出只保留能支持或改变生命周期状态的证据，不复述 A 或旧 finding。
 

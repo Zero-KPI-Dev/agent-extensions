@@ -40,6 +40,7 @@ class CodexAppServerResult:
     turn_id: str | None
     report: str
     protocol_log: str
+    resumed: bool
 
 
 class CodexAppServerClient:
@@ -81,6 +82,7 @@ class CodexAppServerClient:
         self._turn_error: str | None = None
         self._thread_id: str | None = None
         self._turn_id: str | None = None
+        self._thread_subscribed = False
 
     def run(
         self,
@@ -93,9 +95,11 @@ class CodexAppServerClient:
         approval_policy: str = "on-request",
         approvals_reviewer: str = "auto_review",
         thread_name: str | None = None,
+        resume_thread_id: str | None = None,
         should_cancel: Callable[[], bool] | None = None,
         on_pid: Callable[[int | None], None] | None = None,
         on_thread_created: Callable[[str], None] | None = None,
+        on_thread_ready: Callable[[str, bool], None] | None = None,
     ) -> CodexAppServerResult:
         deadline = time.monotonic() + max(1, timeout_seconds)
         if self.transport == "shared_unix":
@@ -125,25 +129,27 @@ class CodexAppServerClient:
                 raise CodexAppServerError("initialize 返回了无效结果")
             self._notify("initialized", {})
 
-            thread_result = self._request(
-                "thread/start",
-                {
-                    "cwd": cwd,
-                    "approvalPolicy": approval_policy,
-                    "approvalsReviewer": approvals_reviewer,
-                    "sandbox": sandbox,
-                    "serviceName": "feishu-pr-review",
-                    "threadSource": "feishu-pr-review",
-                },
+            thread_result, resumed = self._open_thread(
+                cwd=cwd,
+                sandbox=sandbox,
+                approval_policy=approval_policy,
+                approvals_reviewer=approvals_reviewer,
+                resume_thread_id=resume_thread_id,
                 deadline=deadline,
                 should_cancel=should_cancel,
             )
             thread = thread_result.get("thread") if isinstance(thread_result, dict) else None
             thread_id = thread.get("id") if isinstance(thread, dict) else None
             if not isinstance(thread_id, str) or not thread_id:
-                raise CodexAppServerError("thread/start 没有返回 thread.id")
+                method = "thread/resume" if resumed else "thread/start"
+                raise CodexAppServerError(f"{method} 没有返回 thread.id")
             self._thread_id = thread_id
-            if on_thread_created:
+            # thread/start and thread/resume subscribe this JSON-RPC
+            # connection to the thread's live event stream.
+            self._thread_subscribed = True
+            if on_thread_ready:
+                on_thread_ready(thread_id, resumed)
+            elif on_thread_created:
                 on_thread_created(thread_id)
 
             turn_result = self._request(
@@ -168,6 +174,13 @@ class CodexAppServerClient:
                 )
 
             if not self._turn_completed:
+                # Keep the thread subscribed while the turn is active.  The
+                # shared app-server can then return the already-loaded thread
+                # when Codex Desktop opens it and attach the UI to the same
+                # live event stream.  Unsubscribing here unloads the thread
+                # after the no-subscriber grace period while its rollout
+                # writer is still active; Desktop then tries to reload it and
+                # fails with "already has an active writer".
                 self._read_until_turn_completed(deadline=deadline, should_cancel=should_cancel)
 
             if self._turn_status != "completed":
@@ -180,6 +193,7 @@ class CodexAppServerClient:
                 turn_id=turn_id if isinstance(turn_id, str) else None,
                 report=report,
                 protocol_log=self._protocol_log(),
+                resumed=resumed,
             )
         except (CodexAppServerCancelled, CodexAppServerTimeout):
             self._interrupt_current_turn()
@@ -189,6 +203,100 @@ class CodexAppServerClient:
             self._stop_process()
             if on_pid:
                 on_pid(None)
+
+    def _open_thread(
+        self,
+        *,
+        cwd: str,
+        sandbox: str,
+        approval_policy: str,
+        approvals_reviewer: str,
+        resume_thread_id: str | None,
+        deadline: float,
+        should_cancel: Callable[[], bool] | None,
+    ) -> tuple[dict[str, Any], bool]:
+        if resume_thread_id:
+            resume_params = {
+                "threadId": resume_thread_id,
+                "cwd": cwd,
+                "approvalPolicy": approval_policy,
+                "approvalsReviewer": approvals_reviewer,
+                "sandbox": sandbox,
+            }
+            try:
+                result = self._request(
+                    "thread/resume",
+                    resume_params,
+                    deadline=deadline,
+                    should_cancel=should_cancel,
+                )
+                LOGGER.info("resumed Codex App thread %s", resume_thread_id)
+                return result, True
+            except CodexAppServerError as exc:
+                if self._thread_resume_error_is_archived(exc):
+                    LOGGER.info(
+                        "Codex App thread %s is archived; preserving the archive and "
+                        "starting a new thread",
+                        resume_thread_id,
+                    )
+                elif not self._thread_resume_error_allows_new_thread(exc):
+                    raise
+                else:
+                    LOGGER.warning(
+                        "cannot resume Codex App thread %s; starting a replacement thread: %s",
+                        resume_thread_id,
+                        exc,
+                    )
+
+        result = self._request(
+            "thread/start",
+            {
+                "cwd": cwd,
+                "approvalPolicy": approval_policy,
+                "approvalsReviewer": approvals_reviewer,
+                "sandbox": sandbox,
+                "serviceName": "feishu-pr-review",
+                "threadSource": "feishu-pr-review",
+            },
+            deadline=deadline,
+            should_cancel=should_cancel,
+        )
+        return result, False
+
+    @staticmethod
+    def _thread_resume_error_is_archived(exc: CodexAppServerError) -> bool:
+        message = str(exc).lower()
+        thread_or_session_context = "thread" in message or "session" in message
+        return thread_or_session_context and (
+            " is archived" in message or "archived session" in message
+        )
+
+    @staticmethod
+    def _thread_resume_error_allows_new_thread(exc: CodexAppServerError) -> bool:
+        """Only replace a thread that app-server confirms cannot be loaded.
+
+        Execution, transport, resource, and permission failures must remain
+        visible.  Creating a fresh thread for those failures would both hide
+        the real problem and lose review history unnecessarily.
+        """
+
+        message = str(exc).lower()
+        thread_or_rollout_context = "thread" in message or "rollout" in message
+        missing_thread = thread_or_rollout_context and any(
+            marker in message
+            for marker in (
+                "thread not found",
+                "unknown thread",
+                "invalid thread id",
+                "does not exist",
+                "no rollout",
+                "rollout not found",
+            )
+        )
+        unreadable_metadata = "session metadata" in message and any(
+            marker in message for marker in ("failed to read", "missing", "not found")
+        )
+        return missing_thread or unreadable_metadata
 
     def _start_process(self, *, cwd: str, env: dict[str, str]) -> subprocess.Popen[str]:
         args = [self.executable, "app-server", "--listen", "stdio://"]
@@ -639,7 +747,7 @@ class CodexAppServerClient:
         if process.stderr:
                 process.stderr.close()
 
-    def _unsubscribe_current_thread(self) -> None:
+    def _unsubscribe_current_thread(self) -> bool:
         """Release the app-server subscription before closing the transport.
 
         ``thread/start`` automatically subscribes the connection to the new
@@ -649,8 +757,8 @@ class CodexAppServerClient:
         when transport cleanup is delayed.
         """
 
-        if not self._thread_id:
-            return
+        if not self._thread_id or not self._thread_subscribed:
+            return not self._thread_subscribed
         try:
             self._request(
                 "thread/unsubscribe",
@@ -658,13 +766,16 @@ class CodexAppServerClient:
                 deadline=time.monotonic() + 3.0,
                 should_cancel=None,
             )
+            self._thread_subscribed = False
             LOGGER.info("unsubscribed from Codex App thread %s", self._thread_id)
+            return True
         except Exception as exc:  # noqa: BLE001 - cleanup must not mask the task result
             LOGGER.warning(
                 "failed to unsubscribe from Codex App thread %s: %s",
                 self._thread_id,
                 exc,
             )
+            return False
 
     def _interrupt_current_turn(self) -> None:
         if self._websocket is None or not self._thread_id or not self._turn_id:

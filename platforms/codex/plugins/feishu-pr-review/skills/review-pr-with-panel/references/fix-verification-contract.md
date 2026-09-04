@@ -4,9 +4,9 @@
 
 ## Run 与证据包
 
-每个 packet 保留同一个 `run`：`review_id`、`prior_review_id`、mode、risk_tier、repository、base、previous/current head、publish policy/status、mode reason/confidence，并设置 `recheck_scope_policy: "FROZEN_HIGH_CRITICAL_ONLY"`。保留 requested/effective model、reasoning 和 `fork_turns: "none"`；runtime 未暴露实际模型时使用 `UNKNOWN`，不得把 requested 值当作确认过的 effective。
+每个 packet 保留同一个 `run`：`review_id`、`prior_review_id`、mode、risk_tier、repository、base、previous/current head、publish policy/status、mode reason/confidence，并设置 `recheck_scope_policy: "FROZEN_HIGH_CRITICAL_ONLY"`。保留 requested/effective model、reasoning 和 `fork_turns: "none"`；显式模型与 reasoning 调用成功且没有覆盖、降级或拒绝错误时记录 `effective=requested`，runtime 回报不同实际组合时以其为准。只有调用结果无法确认任何执行组合时才使用 `UNKNOWN` 并说明原因。
 
-Leader 为 A/B 复用同一证据包：旧 finding ID/revision、原触发路径、预期行为、关闭条件、关联 changed hunks、当前相关符号、定向测试和局限。事实使用 `FACT`；推断使用 `INFERENCE`；缺口使用 `UNKNOWN`。置信度只用 `high`、`medium`、`low`。
+Leader 为 A/B 复用同一证据包：旧 finding ID/revision、原触发路径、预期行为、关闭条件、关联 changed hunks、当前相关符号、定向测试和局限。若旧 finding 或修复涉及多副本、路由、共享状态、租约/接管或滚动升级，证据包还必须包含当前 `deployment_context` 和原跨副本触发路径；关闭时要证明该路径在故障、重试和版本并存条件下也被阻断。事实使用 `FACT`；推断使用 `INFERENCE`；缺口使用 `UNKNOWN`。置信度只用 `high`、`medium`、`low`。
 
 ## 生命周期状态
 
@@ -26,7 +26,20 @@ Leader 为 A/B 复用同一证据包：旧 finding ID/revision、原触发路径
   "round": 0,
   "run": {"mode": "FIX_VERIFICATION"},
   "model": {},
-  "scope": {"previous_head": "...", "current_head": "...", "relevant_hunks": [], "limitations": []},
+  "scope": {
+    "previous_head": "...",
+    "current_head": "...",
+    "relevant_hunks": [],
+    "deployment_context": {
+      "topology": "single_node | distributed | both | unknown",
+      "evidence": [],
+      "affected_components": [],
+      "risk_areas_checked": [],
+      "distributed_impact": "NONE | SAFE_WITH_EVIDENCE | RISK_IDENTIFIED | UNVERIFIED",
+      "limitations": []
+    },
+    "limitations": []
+  },
   "prior_findings": [{
     "finding_id": "F-001",
     "original_revision": 1,

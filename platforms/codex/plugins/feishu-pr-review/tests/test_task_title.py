@@ -15,10 +15,14 @@ class FakeAppServerClient(CodexAppServerClient):
         *,
         fail_naming: bool = False,
         transient_naming_failures: int = 0,
+        resume_failure: str | None = None,
+        archived_once: bool = False,
     ) -> None:
         super().__init__("codex", transport="shared_unix", socket_path="/tmp/fake.sock")
         self.fail_naming = fail_naming
         self.transient_naming_failures = transient_naming_failures
+        self.resume_failure = resume_failure
+        self.archived_once = archived_once
         self.requests: list[tuple[str, dict[str, Any]]] = []
 
     def _connect_socket(self) -> None:
@@ -34,6 +38,15 @@ class FakeAppServerClient(CodexAppServerClient):
         self.requests.append((method, params))
         if method == "initialize":
             return {}
+        if method == "thread/resume":
+            if self.archived_once:
+                self.archived_once = False
+                raise CodexAppServerError(
+                    f"session {params['threadId']} is archived. Run `codex unarchive` first."
+                )
+            if self.resume_failure:
+                raise CodexAppServerError(self.resume_failure)
+            return {"thread": {"id": params["threadId"]}}
         if method == "thread/start":
             return {"thread": {"id": "thread-1"}}
         if method == "thread/name/set":
@@ -91,6 +104,110 @@ class TaskTitleTests(unittest.TestCase):
         turn_params = client.requests[2][1]
         self.assertEqual(turn_params["input"][0]["text"], "review")
         self.assertEqual(result.report, "done")
+        self.assertFalse(result.resumed)
+
+    def test_client_resumes_existing_pr_thread(self) -> None:
+        client = FakeAppServerClient()
+        ready: list[tuple[str, bool]] = []
+
+        result = client.run(
+            cwd="/tmp",
+            prompt="review again",
+            sandbox="read-only",
+            timeout_seconds=30,
+            env={},
+            thread_name="EchoMem#345",
+            resume_thread_id="thread-existing",
+            on_thread_ready=lambda thread_id, resumed: ready.append((thread_id, resumed)),
+        )
+
+        self.assertEqual(
+            [method for method, _params in client.requests],
+            [
+                "initialize",
+                "thread/resume",
+                "turn/start",
+                "thread/name/set",
+                "thread/unsubscribe",
+            ],
+        )
+        resume_params = client.requests[1][1]
+        self.assertEqual(resume_params["threadId"], "thread-existing")
+        self.assertNotIn("excludeTurns", resume_params)
+        self.assertEqual(ready, [("thread-existing", True)])
+        self.assertEqual(result.thread_id, "thread-existing")
+        self.assertTrue(result.resumed)
+
+    def test_missing_pr_thread_starts_replacement(self) -> None:
+        client = FakeAppServerClient(resume_failure="thread/resume 失败：thread not found")
+
+        result = client.run(
+            cwd="/tmp",
+            prompt="review again",
+            sandbox="read-only",
+            timeout_seconds=30,
+            env={},
+            resume_thread_id="thread-deleted",
+        )
+
+        self.assertEqual(
+            [method for method, _params in client.requests],
+            [
+                "initialize",
+                "thread/resume",
+                "thread/start",
+                "turn/start",
+                "thread/unsubscribe",
+            ],
+        )
+        self.assertEqual(result.thread_id, "thread-1")
+        self.assertFalse(result.resumed)
+
+    def test_archived_pr_thread_starts_new_thread_without_unarchiving(self) -> None:
+        client = FakeAppServerClient(archived_once=True)
+        ready: list[tuple[str, bool]] = []
+
+        result = client.run(
+            cwd="/tmp",
+            prompt="review again",
+            sandbox="read-only",
+            timeout_seconds=30,
+            env={},
+            resume_thread_id="thread-archived",
+            on_thread_ready=lambda thread_id, resumed: ready.append((thread_id, resumed)),
+        )
+
+        self.assertEqual(
+            [method for method, _params in client.requests],
+            [
+                "initialize",
+                "thread/resume",
+                "thread/start",
+                "turn/start",
+                "thread/unsubscribe",
+            ],
+        )
+        self.assertEqual(result.thread_id, "thread-1")
+        self.assertFalse(result.resumed)
+        self.assertEqual(ready, [("thread-1", False)])
+
+    def test_resume_resource_failure_does_not_hide_problem_with_new_thread(self) -> None:
+        client = FakeAppServerClient(resume_failure="Too many open files (os error 24)")
+
+        with self.assertRaisesRegex(CodexAppServerError, "Too many open files"):
+            client.run(
+                cwd="/tmp",
+                prompt="review again",
+                sandbox="read-only",
+                timeout_seconds=30,
+                env={},
+                resume_thread_id="thread-existing",
+            )
+
+        self.assertEqual(
+            [method for method, _params in client.requests],
+            ["initialize", "thread/resume"],
+        )
 
     def test_naming_failure_does_not_fail_review(self) -> None:
         client = FakeAppServerClient(fail_naming=True)

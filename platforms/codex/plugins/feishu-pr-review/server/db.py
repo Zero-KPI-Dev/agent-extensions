@@ -354,6 +354,46 @@ class StateStore:
                 (thread_id, _now(), job_id),
             )
 
+    def reusable_codex_thread_id(self, job_id: str, pr_url: str) -> str | None:
+        """Return the durable Codex thread that should receive this PR's next turn.
+
+        A retried or daemon-recovered job keeps its own thread.  A genuinely
+        new review continues the latest successful review for the same PR so
+        follow-up verification retains both the visible task history and the
+        model context.  Failed replacement threads are not allowed to displace
+        the last known-good review thread for future jobs.
+        """
+
+        self.initialize()
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT codex_thread_id FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if current:
+                current_thread_id = str(current["codex_thread_id"] or "").strip()
+                if current_thread_id:
+                    return current_thread_id
+
+            previous = connection.execute(
+                """
+                SELECT codex_thread_id
+                FROM jobs
+                WHERE job_id != ?
+                  AND status = 'succeeded'
+                  AND codex_thread_id IS NOT NULL
+                  AND trim(codex_thread_id) != ''
+                  AND lower(rtrim(pr_url, '/')) = lower(rtrim(?, '/'))
+                ORDER BY finished_at DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (job_id, pr_url),
+            ).fetchone()
+        if not previous:
+            return None
+        thread_id = str(previous["codex_thread_id"] or "").strip()
+        return thread_id or None
+
     def request_cancel(self, job_id: str) -> dict[str, Any] | None:
         self.initialize()
         with self._connect() as connection:

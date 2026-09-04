@@ -39,6 +39,8 @@ A/B 之间只传递本契约规定的 JSON packet，便于机器校验和逐轮�
 
 复检 run 还应记录 `recheck_scope_policy: "FROZEN_HIGH_CRITICAL_ONLY"`。它表示默认只更新旧 finding 生命周期；不是新增普通意见的授权。
 
+每次 A 首包的 `scope` 还必须包含 `deployment_context`，字段和状态值遵循 `references/distributed-deployment-review.md`。即使目标是单机或本次变更不影响分布式路径，也要用仓库证据记录 `topology` 与 `distributed_impact`，不能省略该判断。分布式 ownership、共享状态、迁移、异步接管或滚动升级变更默认至少为 `risk_tier=high`。
+
 `previous_head`、`current_head` 和 `finding_id` 是修复复检建立 lineage 的最低要求。没有可靠 lineage 时不得自动关闭旧 finding。若存在 GitHub PR URL，还要保留 `github_target`、`publish_policy` 和 `publish_status`，以便避免重复发布并追踪外部状态。
 
 新 run 使用 `AUTO_AFTER_PANEL_DECISION`，表示可发布 `AGREED` 或通过门禁的 `FINAL_BY_A` finding。历史 packet 中的 `AUTO_AFTER_CONSENSUS` 只作为兼容值读取，不应写入新 run，也不能据此丢失既有 finding lineage。
@@ -125,6 +127,8 @@ runtime event envelope：
 
 行号以当前 head 为准。finding_id 在全部轮次和后续复检中保持稳定，内容变化时递增 revision；修复状态变化不创建新的 finding_id。
 
+分布式 finding 还必须把副本/owner/lease/重试/滚动升级等必要前置条件写入 `trigger_conditions`，把跨组件路径写入 `execution_path`，并在 `existing_controls` 中明确现有事务、fencing、幂等、readiness 或恢复机制为何不足。
+
 ## 首次/增量新 finding packet
 
 A 初始包：
@@ -135,7 +139,21 @@ A 初始包：
   "round": 0,
   "run": {},
   "model": {"requested": "...", "effective": "... | UNKNOWN", "reasoning_requested": "...", "reasoning_effective": "... | UNKNOWN", "fork_turns": "none"},
-  "scope": {"repository": "...", "base": "...", "head": "...", "files_reviewed": [], "limitations": []},
+  "scope": {
+    "repository": "...",
+    "base": "...",
+    "head": "...",
+    "files_reviewed": [],
+    "deployment_context": {
+      "topology": "single_node | distributed | both | unknown",
+      "evidence": [],
+      "affected_components": [],
+      "risk_areas_checked": [],
+      "distributed_impact": "NONE | SAFE_WITH_EVIDENCE | RISK_IDENTIFIED | UNVERIFIED",
+      "limitations": []
+    },
+    "limitations": []
+  },
   "findings": []
 }
 ```

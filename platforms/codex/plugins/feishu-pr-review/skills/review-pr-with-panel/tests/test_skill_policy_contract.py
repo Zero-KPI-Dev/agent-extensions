@@ -65,6 +65,59 @@ class SkillPolicyContractTests(unittest.TestCase):
             publish,
         )
 
+    def test_successful_explicit_agent_model_does_not_render_unknown_pair(self) -> None:
+        policy = _read("references/model-policy.md")
+        agent_a = _read("references/agent-a.md")
+        agent_b = _read("references/agent-b.md")
+        report = _read("references/report-template.md")
+
+        self.assertIn("记录 `effective=requested`", policy)
+        self.assertIn("`effective=requested`", agent_a)
+        self.assertIn("`effective=requested`", agent_b)
+        self.assertIn("已按请求执行", report)
+        self.assertIn("不显示 `UNKNOWN / UNKNOWN`", report)
+        self.assertIn("内部调度日志", report)
+        self.assertNotIn("`A {{agent_a_model_execution_summary}}`", report)
+        collaboration_sections = report.split("## 协作记录")[1:]
+        self.assertEqual(len(collaboration_sections), 2)
+        self.assertTrue(all("| 项目 | 内容 |" in section for section in collaboration_sections))
+        collaboration_lines = [
+            line for line in report.splitlines() if line.startswith("| Agent A |") or line.startswith("| Agent B |")
+        ]
+        self.assertEqual(len(collaboration_lines), 4)
+        self.assertTrue(all("effective_model" not in line for line in collaboration_lines))
+
+    def test_fix_verified_lifecycle_transition_must_publish(self) -> None:
+        skill = _read("SKILL.md")
+        publish = _read("references/github-publish.md")
+        report = _read("references/report-template.md")
+
+        self.assertIn("非终态迁移为 `FIXED_VERIFIED`", skill)
+        self.assertIn("actionable finding 为 0 也必须发布", skill)
+        self.assertIn("### 复检生命周期发布优先级", publish)
+        self.assertIn("优先级高于“没有 actionable finding”", publish)
+        self.assertIn("不能以“无可行动问题”为由设为 `SKIPPED`", publish)
+        self.assertIn("应记录为 `PUBLISHED` 或真实的 `FAILED`", report)
+
+    def test_distributed_deployment_impact_is_a_first_class_review_context(self) -> None:
+        skill = _read("SKILL.md")
+        distributed = _read("references/distributed-deployment-review.md")
+        contract = _read("references/review-contract.md")
+        agent_a = _read("references/agent-a.md")
+        agent_b = _read("references/agent-b.md")
+        report = _read("references/report-template.md")
+
+        self.assertIn("references/distributed-deployment-review.md", skill)
+        self.assertIn("EchoMem 中会影响运行时行为的 PR", skill)
+        self.assertIn("ownership-routing", distributed)
+        self.assertIn("旧 owner", distributed)
+        self.assertIn("滚动升级", distributed)
+        self.assertIn("共享文件系统本身不是数据库租约", distributed)
+        self.assertIn("deployment_context", contract)
+        self.assertIn("不能只验证单进程调用链", agent_a)
+        self.assertIn("不得把 A 的“无分布式影响”当作已证实结论", agent_b)
+        self.assertIn("| 分布式影响 |", report)
+
 
 if __name__ == "__main__":
     unittest.main()

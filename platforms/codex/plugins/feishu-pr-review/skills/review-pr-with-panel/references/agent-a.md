@@ -2,7 +2,7 @@
 
 把以下要求放入 A 的自包含任务提示。不要向 A 提供 B 的预期观点或 Leader 的预判。A 必须服从 Leader 已确定的 `mode`，不得自行把修复复检扩大成完整重检。
 
-Leader 必须用 `fork_turns: "none"` 启动 A，并把所需上下文完整放入本 prompt；不得依赖继承 Leader 历史。packet 中 requested model 由 Leader 提供；只有 runtime 明确暴露实际模型时才填写 effective，否则使用 `UNKNOWN`，不得自行把 requested 值抄成 effective。
+Leader 必须用 `fork_turns: "none"` 启动 A，并把所需上下文完整放入本 prompt；不得依赖继承 Leader 历史。packet 中 requested model 由 Leader 提供；显式模型与 reasoning 调用成功且没有覆盖、降级或拒绝错误时填写 `effective=requested`，runtime 明确回报不同实际组合时改用该组合。只有调用结果无法确认任何执行组合时才使用 `UNKNOWN`，并说明缺失原因。
 
 ## 共同职责
 
@@ -16,6 +16,8 @@ Leader 必须用 `fork_turns: "none"` 启动 A，并把所需上下文完整放�
 4. 只报告由本变更引入、暴露或实质改变的问题。无关旧问题不进入本次 finding。
 5. 不报告纯风格偏好，除非它掩盖具体行为错误。
 6. 不修改任何文件，不实施修复，不提交代码，不发布外部评论。
+
+若 Leader 提供的 `deployment_context` 为 `distributed`/`both`，或要求检查分布式影响，必须完整应用 `references/distributed-deployment-review.md`：把变更追踪到真实副本、Router/owner、共享控制面/存储及故障接管路径；不能只验证单进程调用链。即使没有 finding，也要在 scope 中填写受影响组件、已检查风险面和 `distributed_impact`，并给出支持结论的事实。
 
 ## 首次输出
 
@@ -37,8 +39,9 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。A 可以在启动�
 2. 重新追踪原入口、调用链、触发条件和原问题影响，不因行号变化或代码移动就假设问题消失。
 3. 验证修复是否真正阻断原触发路径，是否符合预期行为，是否有测试、日志或其他可核验事实支持。
 4. 只检查与原触发路径直接相关的旁路、遗漏分支、异常路径、回滚、并发和回归。
-5. 输出 `A_FIX_VERIFY` 的 `prior_findings`，使用 `FIXED_VERIFIED`、`PARTIALLY_FIXED`、`NOT_FIXED`、`UNVERIFIABLE`、`OBSOLETE` 或 `REGRESSION_INTRODUCED`。
-6. 默认保持 `new_findings: []`。只有当前 revision 新引入或实质恶化的问题同时满足直接证据、现实可达、`High`/`Critical` 严重级别，并会阻断主要功能交付或显著威胁系统稳定性、可用性或数据完整性时，才可写入 `new_findings`，并填写 `recheck_gate`。不得报告 Low/Medium/Suggestion、风格、测试偏好或理论风险。
+5. 原问题涉及分布式边界时，必须重放跨副本触发条件，包括旧 owner 迟到、重复投递、lease/epoch 变化、共享状态可见性和滚动升级；单节点健康路径不足以证明关闭。
+6. 输出 `A_FIX_VERIFY` 的 `prior_findings`，使用 `FIXED_VERIFIED`、`PARTIALLY_FIXED`、`NOT_FIXED`、`UNVERIFIABLE`、`OBSOLETE` 或 `REGRESSION_INTRODUCED`。
+7. 默认保持 `new_findings: []`。只有当前 revision 新引入或实质恶化的问题同时满足直接证据、现实可达、`High`/`Critical` 严重级别，并会阻断主要功能交付或显著威胁系统稳定性、可用性或数据完整性时，才可写入 `new_findings`，并填写 `recheck_gate`。不得报告 Low/Medium/Suggestion、风格、测试偏好或理论风险。
 
 修复验证不能因为“没有复现”就输出 `FIXED_VERIFIED`；缺少证据时使用 `UNVERIFIABLE` 并给出最小补证动作。输出保持紧凑：每个旧 finding 只保留状态、决定性事实、残留路径、回归检查和置信度，不复述完整原意见。
 

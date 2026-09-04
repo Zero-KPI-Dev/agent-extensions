@@ -107,6 +107,18 @@ def add_bot(path: Path, key: str) -> None:
             if transport == "webhook"
             else str(existing.get("bot_open_id", existing.get("feishu_bot_open_id", "")))
         ),
+        # A Feishu open_id is scoped to one app, so author mappings belong to
+        # the bot instead of being shared globally.
+        "author_mappings": (
+            dict(existing.get("author_mappings", {}))
+            if isinstance(existing.get("author_mappings", {}), dict)
+            else {}
+        ),
+        "merge_maintainers": (
+            dict(existing.get("merge_maintainers", {}))
+            if isinstance(existing.get("merge_maintainers", {}), dict)
+            else {}
+        ),
         "require_mention": yes_no("必须 @ 机器人才能触发", bool(existing.get("require_mention", True))),
         "enabled": yes_no("启用这个机器人", bool(existing.get("enabled", True))),
     }
@@ -147,7 +159,132 @@ def list_bots(path: Path) -> None:
         marker = " (默认)" if raw.get("default_bot") == key else ""
         state = "启用" if bot.get("enabled", True) else "停用"
         transport = bot.get("transport", "long_connection")
-        print(f"- {key}{marker}: {bot.get('display_name', key)} | {state} | {transport} | {bot.get('event_path', '')}")
+        mappings = bot.get("author_mappings", {})
+        mapping_count = len(mappings) if isinstance(mappings, dict) else 0
+        maintainers = bot.get("merge_maintainers", {})
+        maintainer_repo_count = len(maintainers) if isinstance(maintainers, dict) else 0
+        print(
+            f"- {key}{marker}: {bot.get('display_name', key)} | {state} | {transport} | "
+            f"作者映射 {mapping_count} | 合入者规则 {maintainer_repo_count} | {bot.get('event_path', '')}"
+        )
+
+
+def _github_login(value: str) -> str:
+    login = value.strip().lstrip("@").lower()
+    if not login or any(character.isspace() for character in login):
+        raise SystemExit("GitHub 用户名不能为空，也不能包含空白字符")
+    return login
+
+
+def set_author_mapping(path: Path, bot_key: str, github_login: str, feishu_open_id: str) -> None:
+    raw = load_raw(path)
+    bots = raw.setdefault("bots", {})
+    bot = bots.get(bot_key)
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    login = _github_login(github_login)
+    open_id = feishu_open_id.strip()
+    if not open_id or any(character.isspace() for character in open_id):
+        raise SystemExit("飞书 Open ID 不能为空，也不能包含空白字符")
+    mappings = bot.setdefault("author_mappings", {})
+    if not isinstance(mappings, dict):
+        mappings = {}
+        bot["author_mappings"] = mappings
+    mappings[login] = open_id
+    save_raw(path, raw)
+    print(f"已为机器人 {bot_key} 绑定 GitHub 作者 {login} -> {open_id}")
+    print("映射会由网关自动热加载，不需要重启。")
+
+
+def remove_author_mapping(path: Path, bot_key: str, github_login: str) -> None:
+    raw = load_raw(path)
+    bots = raw.setdefault("bots", {})
+    bot = bots.get(bot_key)
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    mappings = bot.get("author_mappings", {})
+    login = _github_login(github_login)
+    if not isinstance(mappings, dict) or login not in mappings:
+        raise SystemExit(f"机器人 {bot_key} 没有 GitHub 作者映射：{login}")
+    del mappings[login]
+    save_raw(path, raw)
+    print(f"已删除机器人 {bot_key} 的作者映射：{login}")
+
+
+def list_author_mappings(path: Path, bot_key: str) -> None:
+    raw = load_raw(path)
+    bots = raw.get("bots", {})
+    bot = bots.get(bot_key) if isinstance(bots, dict) else None
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    mappings = bot.get("author_mappings", {})
+    if not isinstance(mappings, dict) or not mappings:
+        print(f"机器人 {bot_key} 还没有配置 GitHub 作者映射。")
+        return
+    for github_login, open_id in sorted(mappings.items(), key=lambda item: str(item[0]).lower()):
+        print(f"- {str(github_login).lower()} -> {open_id}")
+
+
+def _maintainer_repo_key(value: str) -> str:
+    repo_key = value.strip().lower()
+    if repo_key != "*" and repo_key.count("/") != 1:
+        raise SystemExit("合入者仓库 key 必须是 owner/repo 或 *")
+    return repo_key
+
+
+def set_merge_maintainers(
+    path: Path,
+    bot_key: str,
+    repo_key: str,
+    feishu_open_ids: list[str],
+) -> None:
+    raw = load_raw(path)
+    bots = raw.setdefault("bots", {})
+    bot = bots.get(bot_key)
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    normalized_repo = _maintainer_repo_key(repo_key)
+    open_ids = list(dict.fromkeys(open_id.strip() for open_id in feishu_open_ids if open_id.strip()))
+    if not open_ids or any(any(character.isspace() for character in open_id) for open_id in open_ids):
+        raise SystemExit("至少需要一个有效的飞书 Open ID，且 Open ID 不能包含空白字符")
+    mappings = bot.setdefault("merge_maintainers", {})
+    if not isinstance(mappings, dict):
+        mappings = {}
+        bot["merge_maintainers"] = mappings
+    mappings[normalized_repo] = open_ids
+    save_raw(path, raw)
+    print(f"已为机器人 {bot_key} 配置 {normalized_repo} 的可合入结论提醒人：{', '.join(open_ids)}")
+    print("配置会由网关自动热加载，不需要重启。")
+
+
+def remove_merge_maintainers(path: Path, bot_key: str, repo_key: str) -> None:
+    raw = load_raw(path)
+    bots = raw.setdefault("bots", {})
+    bot = bots.get(bot_key)
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    normalized_repo = _maintainer_repo_key(repo_key)
+    mappings = bot.get("merge_maintainers", {})
+    if not isinstance(mappings, dict) or normalized_repo not in mappings:
+        raise SystemExit(f"机器人 {bot_key} 没有 {normalized_repo} 的合入者配置")
+    del mappings[normalized_repo]
+    save_raw(path, raw)
+    print(f"已删除机器人 {bot_key} 的 {normalized_repo} 合入者配置")
+
+
+def list_merge_maintainers(path: Path, bot_key: str) -> None:
+    raw = load_raw(path)
+    bots = raw.get("bots", {})
+    bot = bots.get(bot_key) if isinstance(bots, dict) else None
+    if not isinstance(bot, dict):
+        raise SystemExit(f"找不到机器人：{bot_key}")
+    mappings = bot.get("merge_maintainers", {})
+    if not isinstance(mappings, dict) or not mappings:
+        print(f"机器人 {bot_key} 还没有配置可合入结论提醒人。")
+        return
+    for repo_key, open_ids in sorted(mappings.items()):
+        recipients = open_ids if isinstance(open_ids, list) else []
+        print(f"- {repo_key} -> {', '.join(str(open_id) for open_id in recipients)}")
 
 
 def set_repo(path: Path, repo_key: str, repo_root: str) -> None:
@@ -235,6 +372,30 @@ def main() -> int:
     default_repo_parser.add_argument("repo_key")
     repo_subparsers.add_parser("list", help="列出仓库映射")
 
+    author_parser = subparsers.add_parser("author", help="管理 GitHub 作者到飞书用户的映射")
+    author_subparsers = author_parser.add_subparsers(dest="action", required=True)
+    set_author_parser = author_subparsers.add_parser("set", help="新增或修改作者映射")
+    set_author_parser.add_argument("bot_key")
+    set_author_parser.add_argument("github_login")
+    set_author_parser.add_argument("feishu_open_id")
+    remove_author_parser = author_subparsers.add_parser("remove", help="删除作者映射")
+    remove_author_parser.add_argument("bot_key")
+    remove_author_parser.add_argument("github_login")
+    list_author_parser = author_subparsers.add_parser("list", help="列出某个机器人的作者映射")
+    list_author_parser.add_argument("bot_key")
+
+    maintainer_parser = subparsers.add_parser("maintainer", help="管理可合入结论提醒的仓库合入者")
+    maintainer_subparsers = maintainer_parser.add_subparsers(dest="action", required=True)
+    set_maintainer_parser = maintainer_subparsers.add_parser("set", help="设置仓库合入者（覆盖已有列表）")
+    set_maintainer_parser.add_argument("bot_key")
+    set_maintainer_parser.add_argument("repo_key", help="owner/repo，或使用 * 作为所有仓库的默认值")
+    set_maintainer_parser.add_argument("feishu_open_ids", nargs="+")
+    remove_maintainer_parser = maintainer_subparsers.add_parser("remove", help="删除仓库合入者配置")
+    remove_maintainer_parser.add_argument("bot_key")
+    remove_maintainer_parser.add_argument("repo_key")
+    list_maintainer_parser = maintainer_subparsers.add_parser("list", help="列出某个机器人的仓库合入者")
+    list_maintainer_parser.add_argument("bot_key")
+
     runtime_parser = subparsers.add_parser("runtime", help="管理后台执行参数")
     runtime_subparsers = runtime_parser.add_subparsers(dest="action", required=True)
     concurrency_parser = runtime_subparsers.add_parser("concurrency", help="设置最大并行检视任务数（1-8）")
@@ -257,6 +418,20 @@ def main() -> int:
             set_default_repo(args.config, args.repo_key)
         else:
             list_repos(args.config)
+    elif args.resource == "author":
+        if args.action == "set":
+            set_author_mapping(args.config, args.bot_key, args.github_login, args.feishu_open_id)
+        elif args.action == "remove":
+            remove_author_mapping(args.config, args.bot_key, args.github_login)
+        else:
+            list_author_mappings(args.config, args.bot_key)
+    elif args.resource == "maintainer":
+        if args.action == "set":
+            set_merge_maintainers(args.config, args.bot_key, args.repo_key, args.feishu_open_ids)
+        elif args.action == "remove":
+            remove_merge_maintainers(args.config, args.bot_key, args.repo_key)
+        else:
+            list_merge_maintainers(args.config, args.bot_key)
     elif args.resource == "runtime":
         set_concurrency(args.config, args.count)
     return 0

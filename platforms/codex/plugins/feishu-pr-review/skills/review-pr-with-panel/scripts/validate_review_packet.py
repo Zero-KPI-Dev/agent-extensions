@@ -19,6 +19,8 @@ PACKET_ITEMS = {
 }
 SEVERITIES = {"Critical", "High", "Medium", "Low", "Suggestion"}
 CONFIDENCES = {"high", "medium", "low"}
+DEPLOYMENT_TOPOLOGIES = {"single_node", "distributed", "both", "unknown"}
+DISTRIBUTED_IMPACTS = {"NONE", "SAFE_WITH_EVIDENCE", "RISK_IDENTIFIED", "UNVERIFIED"}
 VALIDITIES = {
     "CONFIRMED",
     "PARTIALLY_CONFIRMED",
@@ -160,6 +162,32 @@ def validate_recheck_new_finding(item: object, prefix: str, errors: list[str]) -
         require(gate.get(field) is True, f"{prefix}.recheck_gate.{field} must be true", errors)
 
 
+def validate_deployment_context(scope: object, errors: list[str]) -> None:
+    require(isinstance(scope, dict), "scope must be an object", errors)
+    if not isinstance(scope, dict):
+        return
+    context = scope.get("deployment_context")
+    require(isinstance(context, dict), "scope.deployment_context must be an object", errors)
+    if not isinstance(context, dict):
+        return
+    require(
+        context.get("topology") in DEPLOYMENT_TOPOLOGIES,
+        "scope.deployment_context.topology is invalid",
+        errors,
+    )
+    require(
+        context.get("distributed_impact") in DISTRIBUTED_IMPACTS,
+        "scope.deployment_context.distributed_impact is invalid",
+        errors,
+    )
+    for field in ("evidence", "affected_components", "risk_areas_checked", "limitations"):
+        require(
+            isinstance(context.get(field), list),
+            f"scope.deployment_context.{field} must be an array",
+            errors,
+        )
+
+
 def validate(packet: dict) -> list[str]:
     errors: list[str] = []
     packet_type = packet.get("packet_type")
@@ -176,6 +204,8 @@ def validate(packet: dict) -> list[str]:
 
     require(isinstance(packet.get("run"), dict), f"{packet_type} requires run object", errors)
     require(isinstance(packet.get("model"), dict), "model must be an object", errors)
+    if packet_type in {"A_INITIAL", "A_FIX_VERIFY"}:
+        validate_deployment_context(packet.get("scope"), errors)
 
     item_key = PACKET_ITEMS.get(packet_type)
     items = packet.get(item_key) if item_key else None
