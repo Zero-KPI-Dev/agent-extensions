@@ -118,6 +118,22 @@ class SkillPolicyContractTests(unittest.TestCase):
         self.assertIn("不得把 A 的“无分布式影响”当作已证实结论", agent_b)
         self.assertIn("| 分布式影响 |", report)
 
+    def test_new_findings_require_base_head_change_attribution(self) -> None:
+        skill = _read("SKILL.md")
+        contract = _read("references/review-contract.md")
+        agent_a = _read("references/agent-a.md")
+        agent_b = _read("references/agent-b.md")
+        publish = _read("references/github-publish.md")
+        report = _read("references/report-template.md")
+
+        self.assertIn("### PR 变更归因门禁", skill)
+        self.assertIn("`PRE_EXISTING`、`TOUCHED_ONLY` 或 `ATTRIBUTION_UNCLEAR`", skill)
+        self.assertIn('"change_attribution"', contract)
+        self.assertIn("base/head 的同一执行路径", agent_a)
+        self.assertIn("不得只证明当前 head 中问题存在", agent_b)
+        self.assertIn("即使 A/B 共识也不得发布", publish)
+        self.assertIn("**PR 归因证据**", report)
+
 
 if __name__ == "__main__":
     unittest.main()

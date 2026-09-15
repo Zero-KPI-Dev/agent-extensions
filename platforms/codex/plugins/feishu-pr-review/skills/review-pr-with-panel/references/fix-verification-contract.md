@@ -108,7 +108,7 @@ A/B 状态一致时由 Leader 直接裁决，不调用 A recheck。
 
 ## 复检新增意见门禁
 
-`new_findings` 和 `supplementary_findings` 默认必须为空。只有当前 revision 新引入或实质恶化、具有直接证据和现实可达路径、严重级别为 `High`/`Critical`，且会阻断主要功能交付或显著威胁系统稳定性、可用性或数据完整性的问题才可例外加入。
+`new_findings` 和 `supplementary_findings` 默认必须为空。只有当前 revision 新引入或实质恶化、具有直接证据和现实可达路径、严重级别为 `High`/`Critical`，且会阻断主要功能交付或显著威胁系统稳定性、可用性或数据完整性的问题才可例外加入。候选还必须通过 `references/review-contract.md` 的 PR 变更归因门禁并填写 `change_attribution`；仅在复检时被发现的既有问题不得作为回归加入。
 
 例外 finding 使用 `references/review-contract.md` 的完整 Finding 字段，并额外包含：
 

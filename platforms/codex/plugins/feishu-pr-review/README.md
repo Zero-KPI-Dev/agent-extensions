@@ -109,12 +109,16 @@ python3 ~/plugins/feishu-pr-review/scripts/doctor.py
 
 ```json
 {
+  "codex_sandbox": "read-only",
+  "codex_network_access": true,
   "codex_approval_policy": "on-request",
   "codex_approvals_reviewer": "auto_review"
 }
 ```
 
-不要把 `codex_approval_policy` 改成 `"never"`，否则 GitHub 写入类 MCP 调用会被 Codex 直接阻止，并在最终卡片中显示 `approval policy is never`。`auto_review` 只处理 app-server 的审批请求；检视本身仍保持只读，Skill 也不会自动 approve、request changes 或关闭线程。
+`codex_network_access: true` 通过 App Server 的精确 `turn/start.sandboxPolicy` 保持仓库只读，同时允许任务读取网关已确认的目标 PR，并向该 PR 发布授权的 `COMMENT` review。关闭它后任务只能使用本地对象，网关仍会在启动前校验 GitHub base/head，但 Codex 无法刷新历史 review、checks 或直接发布意见。
+
+不要把 `codex_approval_policy` 改成 `"never"`，否则需要审批的 GitHub 写入类 MCP 调用会被 Codex 直接阻止，并在最终卡片中显示 `approval policy is never`。`auto_review` 只处理 app-server 的审批请求；检视本身仍保持只读，Skill 也不会自动 approve、request changes 或关闭线程。网关会在启动 Codex 前实时解析 GitHub PR 的 base/head；解析失败时任务会直接失败，不会按本地分支名或提交时间猜测目标。
 
 ## 3. 启动本机网关
 

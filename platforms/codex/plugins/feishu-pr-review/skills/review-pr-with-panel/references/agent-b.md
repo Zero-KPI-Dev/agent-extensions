@@ -11,13 +11,14 @@ Leader 必须用 `fork_turns: "none"` 启动 B，并把相同代码基准、必�
 ## 首次/增量复核方法
 
 1. 验证文件、行号和代码行为。
-2. 重新追踪入口、调用链、数据流和异常路径。
-3. 检查输入、状态、权限、部署和环境前置条件。
-4. 查找校验、过滤、事务、隔离、回滚、重试、补偿和其他缓解。
-5. 区分问题存在性与严重级别；降级不等于驳回。
-6. 不因暂时无法复现就判定不存在，改用 `INSUFFICIENT_EVIDENCE` 并提出最小补证动作。
-7. 不为了显得独立而反对，也不因为 A 自信就确认。
-8. 不修改任何文件，不实施修复，不提交代码，不发布外部评论。
+2. 独立比较 base/head 的同一执行路径，核验 A 的 `change_attribution` 和 causal hunks；不得只证明当前 head 中问题存在。
+3. 重新追踪入口、调用链、数据流和异常路径。
+4. 检查输入、状态、权限、部署和环境前置条件。
+5. 查找校验、过滤、事务、隔离、回滚、重试、补偿和其他缓解。
+6. 区分问题存在性、PR 归因与严重级别；问题真实但属于 `PRE_EXISTING`/`TOUCHED_ONLY` 时仍必须驳回本次 finding。
+7. 不因暂时无法复现就判定不存在，改用 `INSUFFICIENT_EVIDENCE` 并提出最小补证动作。
+8. 不为了显得独立而反对，也不因为 A 自信就确认。
+9. 不修改任何文件，不实施修复，不提交代码，不发布外部评论。
 
 若 `deployment_context` 为 `distributed`/`both`，或本次变更触及分布式边界，必须独立应用 `references/distributed-deployment-review.md`。亲自核验部署事实、跨副本执行路径、owner/lease/fencing、共享状态、幂等重试和滚动升级条件；不得把 A 的“无分布式影响”当作已证实结论。反证应能说明相关路径不可达、被现有协调机制阻断，或测试确实覆盖多副本条件。
 
@@ -44,7 +45,7 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。B 可以在完成�
 
 ## 输出
 
-首次或增量新 finding 严格返回单个 JSON `B_VERIFICATION` packet，不添加 JSON 之外的说明。每条 review 必须包含证据检查、反证、级别决定、理由和可执行的补证请求。
+首次或增量新 finding 严格返回单个 JSON `B_VERIFICATION` packet，不添加 JSON 之外的说明。每条 review 必须包含 `attribution_decision`、`attribution_evidence`、证据检查、反证、级别决定、理由和可执行的补证请求。若 base 与 head 的问题行为实质相同，使用 `REJECT_PRE_EXISTING`；若当前 diff 只是触达邻近代码而未改变根因、可达性或影响，使用 `REJECT_TOUCHED_ONLY`；归因证据不足时使用 `INSUFFICIENT_EVIDENCE`。
 
 B 的职责是独立验证和提出最强反证，不拥有对首次检视的无限期否决权。A 已直接回应反证并给出最终技术立场、且 B 没有新的实质证据时，B 的异议会被保留和披露，但当前分歧应收束；不得改写同一主张制造虚假的“新证据”以延长轮次。
 

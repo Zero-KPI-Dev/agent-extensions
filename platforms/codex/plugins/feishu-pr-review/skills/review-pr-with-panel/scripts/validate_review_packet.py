@@ -21,6 +21,13 @@ SEVERITIES = {"Critical", "High", "Medium", "Low", "Suggestion"}
 CONFIDENCES = {"high", "medium", "low"}
 DEPLOYMENT_TOPOLOGIES = {"single_node", "distributed", "both", "unknown"}
 DISTRIBUTED_IMPACTS = {"NONE", "SAFE_WITH_EVIDENCE", "RISK_IDENTIFIED", "UNVERIFIED"}
+CHANGE_ATTRIBUTIONS = {"INTRODUCED", "WORSENED", "CONTRACT_INCOMPLETE"}
+ATTRIBUTION_DECISIONS = {
+    "CONFIRMED",
+    "REJECT_PRE_EXISTING",
+    "REJECT_TOUCHED_ONLY",
+    "INSUFFICIENT_EVIDENCE",
+}
 VALIDITIES = {
     "CONFIRMED",
     "PARTIALLY_CONFIRMED",
@@ -94,6 +101,38 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def validate_change_attribution(item: object, prefix: str, errors: list[str]) -> None:
+    require(isinstance(item, dict), f"{prefix} must be an object", errors)
+    if not isinstance(item, dict):
+        return
+
+    classification = item.get("classification")
+    require(
+        classification in CHANGE_ATTRIBUTIONS,
+        f"{prefix}.classification is invalid",
+        errors,
+    )
+    for field in ("base_behavior", "head_behavior", "causal_link"):
+        require(
+            isinstance(item.get(field), str) and bool(item.get(field).strip()),
+            f"{prefix}.{field} must be a non-empty string",
+            errors,
+        )
+    causal_hunks = item.get("causal_hunks")
+    require(
+        isinstance(causal_hunks, list) and bool(causal_hunks),
+        f"{prefix}.causal_hunks must be a non-empty array",
+        errors,
+    )
+    if classification == "CONTRACT_INCOMPLETE":
+        require(
+            isinstance(item.get("scope_obligation"), str)
+            and bool(item.get("scope_obligation").strip()),
+            f"{prefix}.scope_obligation is required for CONTRACT_INCOMPLETE",
+            errors,
+        )
+
+
 def validate_finding(item: object, prefix: str, errors: list[str]) -> None:
     require(isinstance(item, dict), f"{prefix} must be an object", errors)
     if not isinstance(item, dict):
@@ -109,6 +148,7 @@ def validate_finding(item: object, prefix: str, errors: list[str]) -> None:
         "revision",
         "title",
         "locations",
+        "change_attribution",
         "claim",
         "evidence",
         "impact",
@@ -117,6 +157,9 @@ def validate_finding(item: object, prefix: str, errors: list[str]) -> None:
         "verification",
     ):
         require(field in item, f"{prefix}.{field} is required", errors)
+    validate_change_attribution(
+        item.get("change_attribution"), f"{prefix}.change_attribution", errors
+    )
     require(item.get("severity") in SEVERITIES, f"{prefix}.severity is invalid", errors)
     confidence = item.get("confidence")
     if confidence is not None:
@@ -230,6 +273,39 @@ def validate(packet: dict) -> list[str]:
                 errors,
             )
             require(item.get("validity") in VALIDITIES, f"{prefix}.validity is invalid", errors)
+            attribution_decision = item.get("attribution_decision")
+            require(
+                attribution_decision in ATTRIBUTION_DECISIONS,
+                f"{prefix}.attribution_decision is invalid",
+                errors,
+            )
+            require(
+                isinstance(item.get("attribution_evidence"), str)
+                and bool(item.get("attribution_evidence").strip()),
+                f"{prefix}.attribution_evidence must be a non-empty string",
+                errors,
+            )
+            if attribution_decision == "CONFIRMED":
+                require(
+                    item.get("validity") in {"CONFIRMED", "PARTIALLY_CONFIRMED"},
+                    f"{prefix}.validity must confirm an accepted attribution",
+                    errors,
+                )
+            elif attribution_decision in {
+                "REJECT_PRE_EXISTING",
+                "REJECT_TOUCHED_ONLY",
+            }:
+                require(
+                    item.get("validity") == "REJECTED",
+                    f"{prefix}.validity must be REJECTED when attribution is rejected",
+                    errors,
+                )
+            elif attribution_decision == "INSUFFICIENT_EVIDENCE":
+                require(
+                    item.get("validity") == "INSUFFICIENT_EVIDENCE",
+                    f"{prefix}.validity must be INSUFFICIENT_EVIDENCE when attribution is uncertain",
+                    errors,
+                )
             require(item.get("severity_decision") in SEVERITY_DECISIONS, f"{prefix}.severity_decision is invalid", errors)
             if item.get("suggested_severity") is not None:
                 require(item.get("suggested_severity") in SEVERITIES, f"{prefix}.suggested_severity is invalid", errors)

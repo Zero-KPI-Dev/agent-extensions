@@ -32,6 +32,16 @@ class ReviewPolicyCopyTests(unittest.TestCase):
 
         self.assertTrue(manifest["version"].startswith("0.1.1+codex."))
 
+    def test_gateway_prompt_declares_authorized_defensive_review_boundary(self) -> None:
+        text = (PLUGIN_ROOT / "server" / "gateway.py").read_text(encoding="utf-8")
+
+        self.assertIn("经发起人授权的只读、防御性代码审查", text)
+        self.assertIn("只分析当前 diff 的代码级风险", text)
+        self.assertIn("不生成复现攻击的内容", text)
+        self.assertIn("只向该 PR 创建 COMMENT review", text)
+        self.assertIn("不得根据本地邻近分支", text)
+        self.assertNotIn("不访问或操作外部系统", text)
+
 
 if __name__ == "__main__":
     unittest.main()

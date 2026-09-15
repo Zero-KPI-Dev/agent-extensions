@@ -156,6 +156,7 @@ class Config:
     codex_app_server_socket: Path
     review_skill_path: Path
     codex_sandbox: str
+    codex_network_access: bool
     codex_approval_policy: str
     codex_approvals_reviewer: str
     max_concurrent_jobs: int
@@ -254,6 +255,10 @@ class Config:
             codex_app_server_socket=codex_app_server_socket,
             review_skill_path=_review_skill_path(file_config),
             codex_sandbox=str(_env("CODEX_SANDBOX", file_config.get("codex_sandbox", "read-only"))),
+            codex_network_access=_bool(
+                _env("CODEX_NETWORK_ACCESS", file_config.get("codex_network_access", True)),
+                True,
+            ),
             codex_approval_policy=codex_approval_policy,
             codex_approvals_reviewer=codex_approvals_reviewer,
             max_concurrent_jobs=max_concurrent_jobs,
@@ -305,6 +310,7 @@ class Config:
             "codex_runner": self.codex_runner,
             "codex_app_server_transport": self.codex_app_server_transport,
             "codex_app_server_socket": str(self.codex_app_server_socket),
+            "codex_network_access": self.codex_network_access,
             "codex_approval_policy": self.codex_approval_policy,
             "codex_approvals_reviewer": self.codex_approvals_reviewer,
             "max_concurrent_jobs": self.max_concurrent_jobs,

@@ -22,7 +22,7 @@ description: 管理本机飞书 PR 检视网关，查询、提交、取消或重
 
 用户发送 `@机器人 我的 Open ID` 时，返回该消息发送者在当前机器人应用下的飞书 Open ID，不创建检视任务。Open ID 与飞书应用绑定，不得跨机器人复用作者映射。
 
-对于有效 GitHub PR URL，除非用户明确要求 report-only，发布规则遵循 `review-pr-with-panel`：共识或 A 终审确认的可行动意见发布到 GitHub PR；`FINAL_BY_A` 意见必须披露 B 异议。当前 diff 行可定位时使用行内意见，否则使用 review body。不要自动 approve、request changes 或关闭线程。
+对于有效 GitHub PR URL，发布规则遵循 `review-pr-with-panel`：用户或已明确授权的网关流程允许向该 PR 发布，且用户未要求 report-only 时，发布共识或 A 终审确认的可行动意见；`FINAL_BY_A` 意见必须披露 B 异议。仅提交 PR 评审请求不自动构成发布授权；没有授权时先交付完整报告，按发布规则处理批准。当前 diff 行可定位时使用行内意见，否则使用 review body。不要自动 approve、request changes 或关闭线程。
 
 ## MCP 工具
 

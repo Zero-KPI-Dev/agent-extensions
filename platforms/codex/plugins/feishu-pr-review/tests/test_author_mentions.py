@@ -24,7 +24,7 @@ from server.feishu import (
     notification_mention_text,
     review_conclusion,
 )
-from server.gateway import ReviewWorker, resolve_github_pr_author
+from server.gateway import ReviewWorker, resolve_github_pr_author, resolve_github_pr_metadata
 
 
 def _bot(
@@ -225,6 +225,40 @@ class GithubAuthorResolutionTests(unittest.TestCase):
         author = resolve_github_pr_author("https://github.com/octo/repo/pull/1", Path("/tmp"))
 
         self.assertEqual(author, "octocat")
+
+    @patch("server.gateway.resolve_executable", return_value="/usr/local/bin/gh")
+    @patch("server.gateway.subprocess.run")
+    def test_live_pr_metadata_pins_base_and_head(self, run: object, _resolve: object) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "number": 542,
+                    "title": "Current pull request",
+                    "url": "https://github.com/octo/repo/pull/542",
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "author": {"login": "octocat"},
+                    "baseRefName": "develop",
+                    "baseRefOid": "a" * 40,
+                    "headRefName": "feature/current",
+                    "headRefOid": "b" * 40,
+                }
+            ),
+            stderr="",
+        )
+
+        metadata = resolve_github_pr_metadata(
+            "https://github.com/octo/repo/pull/542",
+            Path("/tmp"),
+        )
+
+        self.assertIsNotNone(metadata)
+        assert metadata is not None
+        self.assertEqual(metadata.base_sha, "a" * 40)
+        self.assertEqual(metadata.head_sha, "b" * 40)
+        self.assertEqual(metadata.head_ref, "feature/current")
 
 
 class _DeliveryConfig:

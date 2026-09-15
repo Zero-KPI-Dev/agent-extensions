@@ -29,6 +29,7 @@ def load_raw(path: Path) -> dict[str, Any]:
             "codex_app_server_transport": "shared_unix",
             "codex_app_server_socket": str(Path.home() / ".codex/app-server-control/app-server-control.sock"),
             "codex_sandbox": "read-only",
+            "codex_network_access": True,
             "codex_approval_policy": "on-request",
             "codex_approvals_reviewer": "auto_review",
             "max_concurrent_jobs": 4,

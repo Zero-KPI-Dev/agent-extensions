@@ -28,8 +28,18 @@ description: >
 3. 有历史检视时，优先复用最近一轮机器可读的 `review_id`、repository、base/head、finding_id、revision、状态、关键证据和 `deployment_context`；不要把整段会话或完整旧报告重复放进 Agent prompt。
 4. 用 `previous_head..current_head` 判断变更是否针对旧 finding、是否有独立新增范围，以及旧触发路径和跨副本路径是否仍能映射。
 5. 缺少可靠 SHA、仓库身份或 finding_id 时，不凭“之前看过”自动关闭旧 finding。
-6. 只检视用户授权的变更。可以读取未改动代码验证调用链、部署拓扑和跨副本交互，但不得混入无关旧问题。
-7. 不修改代码、不提交代码；只有 GitHub 自动发布规则允许外部写入。
+6. 只检视用户授权的变更。可以读取未改动代码验证调用链、部署拓扑和跨副本交互，但未改动代码只是证据来源，不自动成为本 PR 的责任。
+7. 不修改代码、不提交代码；GitHub 外部写入须满足发布规则中的用户或网关发布授权条件。
+
+### PR 变更归因门禁
+
+任何新 finding 进入 A packet 前，必须比较同一 base 与当前 head 的行为，并定位至少一个对问题有因果作用的当前 diff hunk。只允许以下归因：
+
+- `INTRODUCED`：base 不存在该缺陷，当前变更直接引入；
+- `WORSENED`：base 已有相关缺陷，但当前变更扩大了可达入口、影响范围或失败强度，且能具体说明增量；
+- `CONTRACT_INCOMPLETE`：当前 PR 通过代码、API、规范或测试明确引入/改变了行为承诺，但 head 没有完整实现该承诺。仅 PR 标题、描述中的宽泛目标或“改到附近”不足以建立此归因。
+
+`PRE_EXISTING`、`TOUCHED_ONLY` 或 `ATTRIBUTION_UNCLEAR` 候选必须淘汰，不进入 packet、严重级别统计、最终报告或 GitHub 评论；A/B 共识也不能替代因果证据。PR 顺带修复了既有缺陷时，不得把已修复的旧问题倒推为本 PR 引入的 finding。问题位置可以位于未改动代码，但 `change_attribution.causal_hunks` 必须指向造成新增/恶化/承诺未完成的当前变更，并分别记录 `base_behavior`、`head_behavior` 和因果链。Leader 在裁决和发布前必须独立复核该门禁。
 
 ### GitHub PR task 命名
 
@@ -84,8 +94,8 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 ### 首次检视
 
-1. A 读取授权 diff，返回 `A_INITIAL`。
-2. A packet 通过质量门禁后，B 使用相同代码基准和 `deployment_context` 独立验证并返回 `B_VERIFICATION`；分布式影响不能只复述 A 的判断。
+1. A 读取授权 diff，对每个候选执行 base/head 归因门禁后返回 `A_INITIAL`。
+2. A packet 通过质量门禁后，B 使用相同代码基准和 `deployment_context` 独立验证问题及 PR 归因并返回 `B_VERIFICATION`；分布式影响和变更归因都不能只复述 A 的判断。
 3. 仅把有实质分歧的 finding、B 的最强反证和具体问题发回同一个 A。A 必须直接回应反证，并填写可审计的最终技术立场。
 4. 若 A 接受 B 的修订则形成共识；若 A 已明确回应 B 的反证并维持结论，且 B 没有新的实质证据，立即按 contract 以 A 的终审立场收束并保留 B 异议。
 5. 只有出现新的实质证据才继续下一轮 `B → A`。最多三轮是新证据持续出现时的安全上限，不是形成 `FINAL_BY_A` 的前置条件；A 未回应决定性反证或主动要求补证时保持 `DISPUTED`。
@@ -102,11 +112,11 @@ Leader 按 `references/review-modes.md` 独立选择：
 
 ## 报告与 GitHub 发布
 
-按 `references/report-template.md` 生成 GitHub 可渲染 Markdown。首检使用完整 finding 模板；复检使用紧凑生命周期表，只展开未关闭、证据不足或通过新增意见门禁的项目。保留机器可读 lineage 和五个固定章节，并在检视范围中明确记录部署拓扑、受影响组件、分布式风险面结论和未验证限制。
+按 `references/report-template.md` 生成 GitHub 可渲染 Markdown。首检使用完整 finding 模板；复检使用紧凑生命周期表，只展开未关闭、证据不足或通过新增意见门禁的项目。保留机器可读 lineage 和五个固定章节，并在检视范围中明确记录部署拓扑、受影响组件、分布式风险面结论和未验证限制。每个新 actionable finding 必须展示 PR 变更归因及 base/head 行为差异；缺少有效 `change_attribution` 时不得进入报告。
 
 任何面向用户或调用方的摘要中，严重级别数量只统计当前仍需行动的开放 finding。已进入 `FIXED_VERIFIED`、`OBSOLETE` 等关闭状态的历史 finding 必须另列为“历史已验证修复”，不得计入当前待处理数量；因此顶层结论为 `FIX_VERIFIED` 或 `NO_ACTIONABLE_FINDINGS` 时，当前 Critical/High/Medium/Low/Suggestion 数量必须全部为 0。
 
-对有效 GitHub PR URL，且用户未要求只读/仅报告时，按 `references/github-publish.md` 自动发布：
+对有效 GitHub PR URL，先完成评审和可发布报告，再检查用户或已明确授权的网关流程是否允许向该 PR 发布；仅在授权有效且用户未要求只读/仅报告时，按 `references/github-publish.md` 自动发布。没有发布授权时交付完整报告，并仅为发布动作请求批准；明确 report-only 时不再询问发布。发布待批准或受阻不影响已完成评审的交付。以下发布义务均以授权有效为前提：
 
 - 发布已达成一致，或满足 A 终审发布门禁的 actionable finding，默认 action 为 `COMMENT`；A 终审意见必须在评论中披露 B 的异议；
 - 复检不得为重述旧意见创建新的 inline comment；旧 finding 只在 review body 更新生命周期；
@@ -126,6 +136,7 @@ Leader 不按票数裁决，也不发明折中级别。输出模式、base/head�
 ## 禁止事项
 
 - 不把复检变成无边界的重新扫描，也不新增 Low/Medium/Suggestion 意见。
+- 不把仅被本 PR 触达、暴露或顺带修复的既有问题归因给当前 PR；不以 A/B 共识替代 base/head 因果证明。
 - 不把重复旧 finding 包装成“新问题”，不重复发布旧意见。
 - 不把等待超时当成 Agent 失败，不把 Leader observation 当成 heartbeat。
 - 不把 SQLite 写进 Skill、仓库或 worktree。

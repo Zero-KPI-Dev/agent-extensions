@@ -90,6 +90,54 @@ class AppServerVisibilityTests(unittest.TestCase):
         self.assertEqual(client.subscription_states_while_streaming, [True, True])
         self.assertFalse(client._thread_subscribed)
 
+    def test_turn_can_enable_network_while_repository_remains_read_only(self) -> None:
+        client = StreamingAppServerClient()
+
+        client.run(
+            cwd="/tmp",
+            prompt="review",
+            sandbox="read-only",
+            network_access=True,
+            timeout_seconds=30,
+            env={},
+        )
+
+        thread_params = next(params for method, params in client.requests if method == "thread/start")
+        turn_params = next(params for method, params in client.requests if method == "turn/start")
+        self.assertEqual(thread_params["sandbox"], "read-only")
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {"type": "readOnly", "networkAccess": True},
+        )
+
+    def test_persisted_interrupted_turn_is_reconciled(self) -> None:
+        client = StreamingAppServerClient()
+        client._thread_id = "thread-visible"
+        client._turn_id = "turn-visible"
+
+        def request(method: str, params: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            self.assertEqual(method, "thread/turns/list")
+            self.assertEqual(params["itemsView"], "notLoaded")
+            return {
+                "data": [
+                    {
+                        "id": "turn-visible",
+                        "status": "interrupted",
+                        "items": [],
+                    }
+                ]
+            }
+
+        client._request = request  # type: ignore[method-assign]
+        client._refresh_persisted_turn_status(
+            deadline=30.0,
+            should_cancel=None,
+        )
+
+        self.assertTrue(client._turn_completed)
+        self.assertEqual(client._turn_status, "interrupted")
+        self.assertEqual(client._turn_error, "Codex turn 已在 App 中中断")
+
 
 if __name__ == "__main__":
     unittest.main()

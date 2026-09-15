@@ -27,6 +27,13 @@ class ReviewSkillPathTests(unittest.TestCase):
         self.assertEqual(config.review_skill_path, bundled_review_skill_path())
         self.assertTrue(config.review_skill_path.is_file())
         self.assertTrue(config.public_summary()["review_skill_bundled"])
+        self.assertTrue(config.codex_network_access)
+
+    def test_network_access_can_be_disabled_explicitly(self) -> None:
+        config = self.load_config({"codex_network_access": False})
+
+        self.assertFalse(config.codex_network_access)
+        self.assertFalse(config.public_summary()["codex_network_access"])
 
     def test_legacy_user_skill_path_migrates_to_bundled_copy(self) -> None:
         config = self.load_config(

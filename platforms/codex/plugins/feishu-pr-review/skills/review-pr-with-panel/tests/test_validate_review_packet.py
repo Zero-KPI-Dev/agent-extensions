@@ -38,6 +38,16 @@ def finding(severity: str, gate: dict | None = None) -> dict:
         "revision": 1,
         "title": "Delivery blocker",
         "locations": [],
+        "change_attribution": {
+            "classification": "INTRODUCED",
+            "base_behavior": "The base revision preserves the primary request path.",
+            "head_behavior": "The current revision breaks the primary request path.",
+            "causal_hunks": [
+                {"path": "src/service.py", "line_start": 42, "line_end": 44}
+            ],
+            "causal_link": "The changed branch now rejects every request.",
+            "scope_obligation": None,
+        },
         "claim": "Current revision breaks the primary request path.",
         "evidence": [],
         "impact": "Primary functionality cannot be delivered.",
@@ -140,6 +150,62 @@ class RecheckFindingGateTests(unittest.TestCase):
         errors = validate(packet)
 
         self.assertTrue(any("current_status is invalid" in error for error in errors))
+
+
+class ChangeAttributionTests(unittest.TestCase):
+    @staticmethod
+    def b_packet(attribution_decision: str, validity: str) -> dict:
+        return {
+            "packet_type": "B_VERIFICATION",
+            "round": 1,
+            "run": {"mode": "INITIAL_REVIEW"},
+            "model": {},
+            "reviews": [
+                {
+                    "finding_id": "F-001",
+                    "validity": validity,
+                    "attribution_decision": attribution_decision,
+                    "attribution_evidence": "Base and head were compared independently.",
+                    "severity_decision": "NOT_APPLICABLE",
+                }
+            ],
+            "supplementary_findings": [],
+        }
+
+    def test_rejects_finding_without_change_attribution(self) -> None:
+        candidate = finding("High")
+        candidate.pop("change_attribution")
+
+        errors = validate(fix_packet([candidate]))
+
+        self.assertTrue(any("change_attribution is required" in error for error in errors))
+
+    def test_rejects_pre_existing_as_actionable_attribution(self) -> None:
+        candidate = finding("High")
+        candidate["change_attribution"]["classification"] = "PRE_EXISTING"
+
+        errors = validate(fix_packet([candidate]))
+
+        self.assertTrue(any("classification is invalid" in error for error in errors))
+
+    def test_contract_incomplete_requires_specific_scope_obligation(self) -> None:
+        candidate = finding("High")
+        candidate["change_attribution"]["classification"] = "CONTRACT_INCOMPLETE"
+        candidate["change_attribution"]["scope_obligation"] = None
+
+        errors = validate(fix_packet([candidate]))
+
+        self.assertTrue(any("scope_obligation is required" in error for error in errors))
+
+    def test_b_rejecting_pre_existing_finding_must_reject_validity(self) -> None:
+        errors = validate(self.b_packet("REJECT_PRE_EXISTING", "CONFIRMED"))
+
+        self.assertTrue(any("validity must be REJECTED" in error for error in errors))
+
+    def test_b_can_reject_pre_existing_finding_consistently(self) -> None:
+        self.assertEqual(
+            validate(self.b_packet("REJECT_PRE_EXISTING", "REJECTED")), []
+        )
 
 
 class AgentAFinalPositionTests(unittest.TestCase):

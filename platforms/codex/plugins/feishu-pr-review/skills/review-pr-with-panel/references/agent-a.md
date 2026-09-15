@@ -13,7 +13,7 @@ Leader 必须用 `fork_turns: "none"` 启动 A，并把所需上下文完整放�
 1. 先阅读完整 diff，再定向读取相关未改动代码、调用者、接口、测试和配置。
 2. 检查功能正确性、边界条件、错误处理、状态一致性、并发时序、数据完整性、权限边界、资源管理、性能、兼容性、接口契约、测试预期和回归风险。
 3. 主动寻找反证和已有防护，不因代码看起来可疑就报告。
-4. 只报告由本变更引入、暴露或实质改变的问题。无关旧问题不进入本次 finding。
+4. 每个候选先比较 base/head 的同一执行路径，定位当前 diff 中的因果 hunk，并填写 `change_attribution`。只报告 `INTRODUCED`、`WORSENED` 或有具体 scope obligation 的 `CONTRACT_INCOMPLETE`；不能把“本 PR 让我看见了问题”当作“本 PR 引入了问题”。
 5. 不报告纯风格偏好，除非它掩盖具体行为错误。
 6. 不修改任何文件，不实施修复，不提交代码，不发布外部评论。
 
@@ -21,7 +21,7 @@ Leader 必须用 `fork_turns: "none"` 启动 A，并把所需上下文完整放�
 
 ## 首次输出
 
-`INITIAL_REVIEW` 返回单个 JSON `A_INITIAL` packet。即使没有 finding，也返回空 `findings`、完整 scope、run manifest 和 limitations；不要添加 JSON 之外的说明。
+`INITIAL_REVIEW` 返回单个 JSON `A_INITIAL` packet。每个 finding 必须包含 `references/review-contract.md` 规定的 `change_attribution`；`PRE_EXISTING`、`TOUCHED_ONLY`、`ATTRIBUTION_UNCLEAR` 候选不得放入 packet。即使没有 finding，也返回空 `findings`、完整 scope、run manifest 和 limitations；不要添加 JSON 之外的说明。
 
 ## Runtime context 与事件
 
@@ -55,7 +55,7 @@ Agent wrapper 或底层 runtime hook 负责可靠 heartbeat。A 可以在启动�
 - `NEED_MORE_EVIDENCE`：说明缺口和最小验证动作；`current_validity=INSUFFICIENT_EVIDENCE`，`consensus=false`，`final_technical_position` 留空。
 - `WITHDRAW`：撤回原 finding；`current_validity=REJECTED`，`consensus=true`，并填写 `final_technical_position` 记录撤回依据。
 
-当 A 选择 `PARTIAL_ACCEPT`、`REJECT_WITH_EVIDENCE` 或在回应 B 后维持自己的 finding 时，必须逐条回应 B 的最强反证，提供新的或重新定位的直接证据，并填写 `final_technical_position`。如果 B 没有新的实质证据，该立场是首次检视的终审输入；A 不得用重复原主张代替回应，也不得因终审权跳过反证。不要自行组合 response、consensus 与最终立场；严格遵循检视契约中的 `A_RECHECK` 状态转移表。
+当 A 选择 `PARTIAL_ACCEPT`、`REJECT_WITH_EVIDENCE` 或在回应 B 后维持自己的 finding 时，必须逐条回应 B 的最强反证，提供新的或重新定位的直接证据，并填写 `final_technical_position`。B 若指出问题在 base 已存在、当前 hunk 仅触达邻近路径或归因证据不足，A 必须用 base/head 行为差异和因果 hunk 直接回应；不能仅证明 head 中仍有问题。如果 B 没有新的实质证据，该立场是首次检视的终审输入；A 不得用重复原主张代替回应，也不得因终审权跳过反证。不要自行组合 response、consensus 与最终立场；严格遵循检视契约中的 `A_RECHECK` 状态转移表。
 
 只有 Leader 因实质分歧再次调用时才返回 `A_FIX_RECHECK`：
 

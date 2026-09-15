@@ -5,6 +5,7 @@
 - [Packet 与最终报告边界](#packet-与最终报告边界)
 - [Run manifest](#run-manifest)
 - [证据分类](#证据分类)
+- [PR 变更归因](#pr-变更归因)
 - [严重级别](#严重级别)
 - [Finding 字段](#finding-字段)
 - [首次/增量新 finding packet](#首次增量新-finding-packet)
@@ -43,7 +44,7 @@ A/B 之间只传递本契约规定的 JSON packet，便于机器校验和逐轮�
 
 `previous_head`、`current_head` 和 `finding_id` 是修复复检建立 lineage 的最低要求。没有可靠 lineage 时不得自动关闭旧 finding。若存在 GitHub PR URL，还要保留 `github_target`、`publish_policy` 和 `publish_status`，以便避免重复发布并追踪外部状态。
 
-新 run 使用 `AUTO_AFTER_PANEL_DECISION`，表示可发布 `AGREED` 或通过门禁的 `FINAL_BY_A` finding。历史 packet 中的 `AUTO_AFTER_CONSENSUS` 只作为兼容值读取，不应写入新 run，也不能据此丢失既有 finding lineage。
+新 run 仅在目标 PR 发布授权有效且用户未要求只读/仅报告时使用 `AUTO_AFTER_PANEL_DECISION`，表示可发布 `AGREED` 或通过门禁的 `FINAL_BY_A` finding；没有授权或用户要求仅报告时使用 `REPORT_ONLY`，不适用 GitHub 发布时使用 `NOT_APPLICABLE`。历史 packet 中的 `AUTO_AFTER_CONSENSUS` 只作为兼容值读取，不应写入新 run，也不能据此丢失既有 finding lineage。
 
 每次 run 还必须建立 Skill-owned runtime context。该 context 不改变 packet_type，但用于让 Leader、A、B 共享同一个 SQLite 协作边界：
 
@@ -88,6 +89,21 @@ runtime event envelope：
 
 每条 finding 必须把事实与推断分开。理论最坏情况不能替代真实可达路径。
 
+## PR 变更归因
+
+Finding 的“问题存在”与“由当前 PR 负责”是两个独立命题。A、B 和 Leader 都必须用相同 base/head 独立验证归因；三方中的任一环节都不得用“当前 head 存在问题”、行号位于 diff、PR 触达了相邻代码或 A/B 已共识来替代因果证明。
+
+候选先分类：
+
+- `INTRODUCED`：问题在 base 不存在，当前 diff 直接创建了触发路径或错误行为；
+- `WORSENED`：相关缺陷在 base 已存在，但当前 diff 可证明地扩大了入口、影响范围或失败强度；
+- `CONTRACT_INCOMPLETE`：当前 diff 通过代码、API、规范或测试建立了具体的新行为承诺，但 head 未完整实现；
+- `PRE_EXISTING`：base 与 head 的问题行为实质相同；
+- `TOUCHED_ONLY`：PR 只改变调用点、日志、预算透传、文档或邻近代码，问题根因和可达性没有因当前 diff 改变；
+- `ATTRIBUTION_UNCLEAR`：无法用当前证据确定归因。
+
+只有前三类可成为 finding。后三类立即淘汰，不进入 packet、报告、统计或发布。`CONTRACT_INCOMPLETE` 必须给出代码/API/规范/测试中的具体 `scope_obligation`；PR 标题或描述中的宽泛目标单独不足。若问题位置在未改动代码，仍须给出当前 diff 中的 `causal_hunks` 并说明它如何创建责任；找不到因果 hunk 就不能报告。`git blame` 和历史提交只能辅助定位，不能代替 base/head 行为比较。
+
 ## 严重级别
 
 - `Critical`：现实可达，可能造成灾难性、广泛或不可逆影响，且无有效缓解。
@@ -109,6 +125,14 @@ runtime event envelope：
   "title": "简洁、可验证的问题标题",
   "category": "correctness | security | reliability | concurrency | performance | compatibility | tests | other",
   "locations": [{"path": "src/file.ext", "line_start": 10, "line_end": 12, "symbol": "optional"}],
+  "change_attribution": {
+    "classification": "INTRODUCED | WORSENED | CONTRACT_INCOMPLETE",
+    "base_behavior": "base 中同一路径的可观察行为",
+    "head_behavior": "当前 head 中新增或恶化的可观察行为",
+    "causal_hunks": [{"path": "src/file.ext", "line_start": 10, "line_end": 12}],
+    "causal_link": "该 hunk 如何导致新增、恶化或承诺未完成",
+    "scope_obligation": "CONTRACT_INCOMPLETE 时必填；其他分类可为 null"
+  },
   "claim": "当前代码为什么错误",
   "expected_behavior": "正确行为",
   "evidence": [{"type": "FACT", "detail": "具体证据"}],
@@ -170,6 +194,8 @@ B 复核包：
     "finding_id": "F-001",
     "revision_reviewed": 1,
     "validity": "CONFIRMED | PARTIALLY_CONFIRMED | REJECTED | INSUFFICIENT_EVIDENCE",
+    "attribution_decision": "CONFIRMED | REJECT_PRE_EXISTING | REJECT_TOUCHED_ONLY | INSUFFICIENT_EVIDENCE",
+    "attribution_evidence": "B 独立比较 base/head 后的决定性依据",
     "evidence_check": "...",
     "counterevidence": [],
     "severity_decision": "MAINTAIN | UPGRADE | DOWNGRADE | NOT_APPLICABLE | UNDETERMINED",
@@ -221,7 +247,7 @@ response、current_validity、consensus 与 final_technical_position 是一个�
 
 ## 共识与结束
 
-首次检视中，只有对问题有效性、位置、核心触发条件、主要影响和严重级别实质一致时标记 `AGREED`。修复方案文字不同不自动构成分歧。
+首次检视中，只有对问题有效性、PR 变更归因、位置、核心触发条件、主要影响和严重级别实质一致时标记 `AGREED`。修复方案文字不同不自动构成分歧。Leader 必须在最终裁决前验证 `change_attribution`；即使 A/B 都确认，归因字段缺失、因果 hunk 不成立或 base/head 行为没有实质差异时也必须 `CLOSED_REJECTED`。
 
 - B 确认且 A 维持：`AGREED`。
 - A 接受 B 的修订、升级或降级：`AGREED`。

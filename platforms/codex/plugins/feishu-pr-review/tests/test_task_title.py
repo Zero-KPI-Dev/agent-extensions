@@ -16,12 +16,14 @@ class FakeAppServerClient(CodexAppServerClient):
         fail_naming: bool = False,
         transient_naming_failures: int = 0,
         resume_failure: str | None = None,
+        transient_resume_failures: int = 0,
         archived_once: bool = False,
     ) -> None:
         super().__init__("codex", transport="shared_unix", socket_path="/tmp/fake.sock")
         self.fail_naming = fail_naming
         self.transient_naming_failures = transient_naming_failures
         self.resume_failure = resume_failure
+        self.transient_resume_failures = transient_resume_failures
         self.archived_once = archived_once
         self.requests: list[tuple[str, dict[str, Any]]] = []
 
@@ -43,6 +45,11 @@ class FakeAppServerClient(CodexAppServerClient):
                 self.archived_once = False
                 raise CodexAppServerError(
                     f"session {params['threadId']} is archived. Run `codex unarchive` first."
+                )
+            if self.transient_resume_failures:
+                self.transient_resume_failures -= 1
+                raise CodexAppServerError(
+                    f"thread {params['threadId']} already has an active writer"
                 )
             if self.resume_failure:
                 raise CodexAppServerError(self.resume_failure)
@@ -159,6 +166,51 @@ class TaskTitleTests(unittest.TestCase):
                 "turn/start",
                 "thread/unsubscribe",
             ],
+        )
+        self.assertEqual(result.thread_id, "thread-1")
+        self.assertFalse(result.resumed)
+
+    def test_busy_pr_thread_waits_and_resumes_same_thread(self) -> None:
+        client = FakeAppServerClient(transient_resume_failures=2)
+
+        with patch("server.codex_app_server.time.sleep") as sleep:
+            result = client.run(
+                cwd="/tmp",
+                prompt="review again",
+                sandbox="read-only",
+                timeout_seconds=300,
+                env={},
+                resume_thread_id="thread-existing",
+            )
+
+        methods = [method for method, _params in client.requests]
+        self.assertEqual(methods.count("thread/resume"), 3)
+        self.assertNotIn("thread/start", methods)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1.0, 2.0])
+        self.assertEqual(result.thread_id, "thread-existing")
+        self.assertTrue(result.resumed)
+
+    def test_persistently_busy_pr_thread_starts_replacement(self) -> None:
+        client = FakeAppServerClient(
+            resume_failure="thread thread-existing already has an active writer"
+        )
+
+        with patch("server.codex_app_server.time.sleep") as sleep:
+            result = client.run(
+                cwd="/tmp",
+                prompt="review again",
+                sandbox="read-only",
+                timeout_seconds=300,
+                env={},
+                resume_thread_id="thread-existing",
+            )
+
+        methods = [method for method, _params in client.requests]
+        self.assertEqual(methods.count("thread/resume"), 5)
+        self.assertEqual(methods.count("thread/start"), 1)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [1.0, 2.0, 4.0, 8.0],
         )
         self.assertEqual(result.thread_id, "thread-1")
         self.assertFalse(result.resumed)

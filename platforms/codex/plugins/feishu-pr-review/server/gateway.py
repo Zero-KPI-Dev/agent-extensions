@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +45,22 @@ from .resource_health import app_server_resource_status
 
 
 LOGGER = logging.getLogger("feishu-pr-review")
+
+
+@dataclass(frozen=True)
+class GitHubPrMetadata:
+    owner: str
+    repository: str
+    number: int
+    url: str
+    title: str
+    state: str
+    is_draft: bool
+    author: str | None
+    base_ref: str
+    base_sha: str
+    head_ref: str
+    head_sha: str
 
 
 def _configure_logging(log_dir: Path) -> None:
@@ -136,6 +153,113 @@ def _github_pr_api_url(pr_url: str) -> str | None:
     owner = urllib.parse.quote(parts[0], safe="")
     repository = urllib.parse.quote(parts[1], safe="")
     return f"https://api.github.com/repos/{owner}/{repository}/pulls/{int(parts[3])}"
+
+
+def _github_pr_coordinates(pr_url: str) -> tuple[str, str, int] | None:
+    parsed = urlparse(pr_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.hostname not in {"github.com", "www.github.com"}:
+        return None
+    if len(parts) < 4 or parts[2].lower() != "pull" or not parts[3].isdigit():
+        return None
+    return parts[0], parts[1], int(parts[3])
+
+
+def _parse_github_pr_metadata(payload: Any, pr_url: str) -> GitHubPrMetadata | None:
+    coordinates = _github_pr_coordinates(pr_url)
+    if not coordinates or not isinstance(payload, dict):
+        return None
+    owner, repository, expected_number = coordinates
+
+    base = payload.get("base") if isinstance(payload.get("base"), dict) else {}
+    head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
+    author = payload.get("author") if isinstance(payload.get("author"), dict) else {}
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    number = payload.get("number")
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        number = expected_number
+    if number != expected_number:
+        return None
+
+    base_ref = str(payload.get("baseRefName") or base.get("ref") or "").strip()
+    base_sha = str(payload.get("baseRefOid") or base.get("sha") or "").strip()
+    head_ref = str(payload.get("headRefName") or head.get("ref") or "").strip()
+    head_sha = str(payload.get("headRefOid") or head.get("sha") or "").strip()
+    if not base_ref or not base_sha or not head_ref or not head_sha:
+        return None
+    return GitHubPrMetadata(
+        owner=owner,
+        repository=repository,
+        number=number,
+        url=str(payload.get("url") or payload.get("html_url") or pr_url).strip(),
+        title=str(payload.get("title") or "").strip(),
+        state=str(payload.get("state") or "").strip().upper(),
+        is_draft=bool(payload.get("isDraft") if "isDraft" in payload else payload.get("draft")),
+        author=_normalized_github_login(author.get("login") or user.get("login")),
+        base_ref=base_ref,
+        base_sha=base_sha,
+        head_ref=head_ref,
+        head_sha=head_sha,
+    )
+
+
+def resolve_github_pr_metadata(pr_url: str, repo_root: Path | None = None) -> GitHubPrMetadata | None:
+    """Resolve and pin live GitHub PR identity before Codex starts.
+
+    A review must fail closed when the target cannot be confirmed.  It must
+    never infer a PR head from nearby local branches or commit timestamps.
+    """
+
+    executable = resolve_executable("gh")
+    if executable:
+        try:
+            result = subprocess.run(
+                [
+                    executable,
+                    "pr",
+                    "view",
+                    pr_url,
+                    "--json",
+                    (
+                        "number,title,url,state,isDraft,author,"
+                        "baseRefName,baseRefOid,headRefName,headRefOid"
+                    ),
+                ],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+            if result.returncode == 0:
+                metadata = _parse_github_pr_metadata(json.loads(result.stdout), pr_url)
+                if metadata:
+                    return metadata
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+    api_url = _github_pr_api_url(pr_url)
+    if not api_url:
+        return None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "codex-feishu-pr-review",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    return _parse_github_pr_metadata(payload, pr_url)
 
 
 def resolve_github_pr_author(pr_url: str, repo_root: Path | None = None) -> str | None:
@@ -336,15 +460,28 @@ class ReviewWorker(threading.Thread):
             delivery_status=delivery,
         )
 
-    def _prompt(self, job: dict[str, Any]) -> str:
+    def _prompt(self, job: dict[str, Any], pr: GitHubPrMetadata) -> str:
         config = self.config_provider()
         return f"""你正在执行一个由飞书机器人触发的 GitHub PR 检视任务。
+
+任务边界：仅对本地网关已配置仓库中的指定 PR 执行经发起人授权的只读、防御性代码审查。关注代码和文档的正确性、可靠性、兼容性、分布式部署影响与安全加固；即使变更涉及鉴权、密钥、恢复、网络或运维，也只分析当前 diff 的代码级风险并给出防御性修复建议，不生成复现攻击的内容。允许读取下方唯一目标 PR 的 GitHub 元数据、diff、历史 review 与 checks，并按发布规则只向该 PR 创建 COMMENT review；不得访问或操作与该 PR 无关的外部系统。
 
 必须使用本机 Skill：{config.review_skill_path}
 Skill 名称：review-pr-with-panel
 
 目标 PR：{job['pr_url']}
 用户原始请求：{job['request_text']}
+
+网关已从 GitHub 实时确认并冻结本轮目标：
+- repository：{pr.owner}/{pr.repository}
+- PR number：{pr.number}
+- title：{pr.title}
+- state：{pr.state}{' / DRAFT' if pr.is_draft else ''}
+- author：{pr.author or 'UNKNOWN'}
+- base：{pr.base_ref}@{pr.base_sha}
+- head：{pr.head_ref}@{pr.head_sha}
+
+以上 base/head 是本轮唯一允许检视的代码范围。必须再次读取 GitHub 当前元数据确认 head 未变化，然后严格检视 `{pr.base_sha}...{pr.head_sha}`。不得根据本地邻近分支、提交时间、分支名称相似度或其他 PR 会话猜测 base/head；若精确对象缺失或 GitHub 无法确认，立即报告目标解析失败，不得改审其他分支。
 
 请严格执行该 Skill 的完整流程：根据当前 PR 状态选择正确的 review mode，使用 Leader 加两个独立的 A/B 验证代理，保持只读，不实现修复。
 
@@ -367,6 +504,14 @@ Skill 名称：review-pr-with-panel
             self._finish_failure(job, f"找不到检视 Skill：{config.review_skill_path}")
             return
 
+        pr_metadata = resolve_github_pr_metadata(job["pr_url"], repo_root)
+        if pr_metadata is None:
+            self._finish_failure(
+                job,
+                "无法从 GitHub 实时确认 PR 的 base/head，任务已在启动 Codex 前停止；不会从本地分支猜测检视目标。",
+            )
+            return
+
         executable = resolve_executable(config.codex_binary) or config.codex_binary
         env = os.environ.copy()
         panel_state_dir = config.state_dir / "review-panel-state"
@@ -379,13 +524,14 @@ Skill 名称：review-pr-with-panel
         log_path = config.log_dir / f"{job_id}.codex.log"
         LOGGER.info("starting job %s for %s in %s", job_id, job["pr_url"], repo_root)
         if config.codex_runner == "exec":
-            self._execute_with_exec(job, repo_root, executable, env, log_path)
+            self._execute_with_exec(job, pr_metadata, repo_root, executable, env, log_path)
             return
-        self._execute_with_app_server(job, repo_root, executable, env, log_path)
+        self._execute_with_app_server(job, pr_metadata, repo_root, executable, env, log_path)
 
     def _execute_with_exec(
         self,
         job: dict[str, Any],
+        pr_metadata: GitHubPrMetadata,
         repo_root: Path,
         executable: str,
         env: dict[str, str],
@@ -400,7 +546,7 @@ Skill 名称：review-pr-with-panel
             "--json",
             "--sandbox",
             config.codex_sandbox,
-            self._prompt(job),
+            self._prompt(job, pr_metadata),
         ]
         try:
             process = subprocess.Popen(
@@ -464,6 +610,7 @@ Skill 名称：review-pr-with-panel
     def _execute_with_app_server(
         self,
         job: dict[str, Any],
+        pr_metadata: GitHubPrMetadata,
         repo_root: Path,
         executable: str,
         env: dict[str, str],
@@ -495,8 +642,9 @@ Skill 名称：review-pr-with-panel
         try:
             result = client.run(
                 cwd=str(repo_root),
-                prompt=self._prompt(job),
+                prompt=self._prompt(job, pr_metadata),
                 sandbox=config.codex_sandbox,
+                network_access=config.codex_network_access,
                 timeout_seconds=config.job_timeout_seconds,
                 env=env,
                 approval_policy=config.codex_approval_policy,

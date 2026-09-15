@@ -291,6 +291,12 @@ def _card_lines(report: str) -> list[str]:
 
 def _clean_card_line(line: str) -> str:
     line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line.strip())
+    # Codex summaries commonly emphasize labels and values with Markdown,
+    # for example ``**review_id**`` and ``Medium **1**``.  Normalize paired
+    # emphasis markers before matching fields so presentation choices do not
+    # change the parsed card data.
+    line = re.sub(r"\*\*([^\n]+?)\*\*", r"\1", line)
+    line = re.sub(r"__([^\n]+?)__", r"\1", line)
     # A few summary formats contain a placeholder Markdown link such as
     # `[owner/repo#123]()`. It is not useful in a card; the PR button below
     # carries the real URL.
@@ -323,6 +329,7 @@ def _first_labeled_value(lines: list[str], pattern: str) -> str | None:
 
 
 def _counts_in_line(line: str) -> dict[str, int]:
+    line = _clean_card_line(line)
     counts: dict[str, int] = {}
     for severity in ("Critical", "High", "Medium", "Low", "Suggestion"):
         expression = re.compile(
@@ -337,6 +344,35 @@ def _counts_in_line(line: str) -> dict[str, int]:
 
 def _extract_counts(lines: list[str]) -> dict[str, int]:
     severities = ("Critical", "High", "Medium", "Low", "Suggestion")
+    # Full review reports may render the current counts as a Markdown table:
+    # ``| Critical | High | ... |`` followed by an alignment row and values.
+    # Parse the columns together; scanning one line at a time cannot associate
+    # the numeric row with its severity headers.
+    for index, raw_line in enumerate(lines):
+        header = [_strip_card_markup(cell).strip() for cell in raw_line.strip().strip("|").split("|")]
+        positions = {
+            severity: next(
+                (cell_index for cell_index, cell in enumerate(header) if cell.lower() == severity.lower()),
+                None,
+            )
+            for severity in severities
+        }
+        if sum(position is not None for position in positions.values()) < 2:
+            continue
+        for candidate in lines[index + 1 : index + 4]:
+            cells = [_strip_card_markup(cell).strip() for cell in candidate.strip().strip("|").split("|")]
+            if cells and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                continue
+            table_counts: dict[str, int] = {}
+            for severity, position in positions.items():
+                if position is None or position >= len(cells):
+                    continue
+                value = cells[position].strip("`* ")
+                if value.isdigit():
+                    table_counts[severity] = int(value)
+            if len(table_counts) >= 2:
+                return table_counts
+
     # Prefer the overview line so that a number in a finding description is
     # not mistaken for the severity count.
     overview = [
@@ -367,31 +403,67 @@ def _normalize_publish_status(value: str) -> str:
         "PUBLISHED": "已发布",
         "COMMENT": "已发布",
         "FAILED": "发布失败",
+        "SKIPPED": "已跳过",
         "NOT_ATTEMPTED": "未发布",
         "NOT_ATTEMPTED_YET": "未发布",
     }.get(normalized, value.strip())
 
 
 def _parse_publish_line(lines: list[str]) -> tuple[str, str]:
-    line = _first_line_containing(lines, "github 发布", "github publish")
-    if not line:
-        return "", ""
-    detail = re.sub(
-        r"^(?:github\s+发布|github\s+publish)\s*[：:]\s*",
-        "",
-        line,
-        flags=re.IGNORECASE,
+    marker = re.compile(r"github\s+(?:发布|publish)", re.IGNORECASE)
+    status_expression = re.compile(
+        r"(已发布|未发布|发布失败|published|failed|skipped|not[_ ]attempted)",
+        re.IGNORECASE,
     )
-    status_match = re.search(
-        r"(已发布|未发布|发布失败|published|failed|not[_ ]attempted)",
-        detail,
-        flags=re.IGNORECASE,
-    )
-    if not status_match:
+    for index, raw_line in enumerate(lines):
+        line = _clean_card_line(raw_line)
+        if not marker.search(line):
+            continue
+
+        detail = re.sub(
+            r"^#+\s*",
+            "",
+            line,
+        )
+        detail = re.sub(
+            r"^(?:github\s+发布(?:状态)?|github\s+publish(?:\s+status)?)\s*[：:]?\s*",
+            "",
+            detail,
+            flags=re.IGNORECASE,
+        )
+        candidates: list[str] = [detail] if detail else []
+        section_lines: list[str] = []
+        if not detail:
+            for section_line in lines[index + 1 :]:
+                if re.match(r"^#{1,6}\s+", section_line.strip()):
+                    break
+                cleaned = _clean_card_line(section_line)
+                if cleaned:
+                    section_lines.append(cleaned)
+            candidates.extend(section_lines)
+
+        for candidate in candidates:
+            normalized_candidate = _strip_card_markup(candidate)
+            status_match = status_expression.search(normalized_candidate)
+            if not status_match:
+                continue
+            status = _normalize_publish_status(status_match.group(1))
+            reason_parts: list[str] = []
+            inline_reason = normalized_candidate[status_match.end() :].lstrip("。.;；:：,，- ")
+            if inline_reason:
+                reason_parts.append(inline_reason)
+            if section_lines:
+                for section_detail in section_lines:
+                    cleaned_detail = _strip_card_markup(section_detail)
+                    if cleaned_detail == normalized_candidate:
+                        continue
+                    if re.match(r"^(?:状态|status)\s*[：:]", cleaned_detail, re.IGNORECASE):
+                        continue
+                    reason_parts.append(cleaned_detail)
+            return status, "\n".join(_unique_nonempty(reason_parts)).strip("。.;； ")
+
         return "", _strip_card_markup(detail).strip("。.;； ")
-    status = _normalize_publish_status(status_match.group(1))
-    reason = detail[status_match.end() :].lstrip("。.;；:：,，- ")
-    return status, _strip_card_markup(reason).strip("。.;； ")
+    return "", ""
 
 
 def _extract_report_status(lines: list[str]) -> str:
@@ -566,6 +638,8 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
         )
         if heading_index is not None:
             for line in lines[heading_index + 1 :]:
+                if re.match(r"^#{1,6}\s+", line.strip()):
+                    break
                 if any(marker in line.lower() for marker in ("未发布或阻塞", "阻塞原因", "其他限制", "补充信息")):
                     break
                 cleaned = _clean_card_line(line)
@@ -584,6 +658,8 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
             ]
 
         for line in lines:
+            if re.match(r"^#{1,6}\s+", line.strip()):
+                continue
             cleaned = _clean_card_line(line)
             lower = cleaned.lower()
             if (

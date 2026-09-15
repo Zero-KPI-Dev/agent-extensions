@@ -21,6 +21,22 @@ LOGGER = logging.getLogger("feishu-pr-review.codex-app-server")
 # short so presentation work never delays the review itself for long.
 _THREAD_NAME_RETRY_DELAYS = (0.05, 0.10, 0.25, 0.50, 1.00)
 
+# A retry can be requested from the same Codex task that the gateway will
+# resume.  Until that command turn finishes, the rollout still has an active
+# writer and app-server rejects thread/resume.  Wait for that writer to drain
+# instead of turning a successful queue operation into an immediate failure.
+# The short finite window covers normal Desktop/app-server hand-off races.
+# A writer that remains after this window belongs to another long-lived
+# app-server (normally Codex Desktop after an upgrade); in that case the only
+# reliable path is a replacement task.
+_THREAD_BUSY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
+
+# A Desktop restart or an app-server rollout recovery can persist an
+# ``interrupted`` turn without delivering the final notification to an
+# already-subscribed gateway socket.  Periodically reconcile the persisted
+# turn so the queue does not remain stuck until the full job timeout.
+_TURN_STATUS_POLL_SECONDS = 30.0
+
 
 class CodexAppServerError(RuntimeError):
     """An app-server protocol or execution failure."""
@@ -92,6 +108,7 @@ class CodexAppServerClient:
         sandbox: str,
         timeout_seconds: int,
         env: dict[str, str],
+        network_access: bool = False,
         approval_policy: str = "on-request",
         approvals_reviewer: str = "auto_review",
         thread_name: str | None = None,
@@ -157,6 +174,7 @@ class CodexAppServerClient:
                 {
                     "threadId": thread_id,
                     "input": [{"type": "text", "text": prompt}],
+                    "sandboxPolicy": self._sandbox_policy(sandbox, network_access),
                 },
                 deadline=deadline,
                 should_cancel=should_cancel,
@@ -204,6 +222,33 @@ class CodexAppServerClient:
             if on_pid:
                 on_pid(None)
 
+    @staticmethod
+    def _sandbox_policy(sandbox: str, network_access: bool) -> dict[str, Any]:
+        """Build the precise turn policy supported by current App Server.
+
+        ``thread/start`` accepts only the coarse SandboxMode string.  A
+        ``turn/start`` override is required to keep the repository read-only
+        while allowing GitHub metadata reads and authorized COMMENT reviews.
+        """
+
+        normalized = str(sandbox or "read-only").strip().lower().replace("_", "-")
+        if normalized == "danger-full-access":
+            return {"type": "dangerFullAccess"}
+        if normalized == "workspace-write":
+            return {
+                "type": "workspaceWrite",
+                "networkAccess": bool(network_access),
+            }
+        if normalized == "external-sandbox":
+            return {
+                "type": "externalSandbox",
+                "networkAccess": "enabled" if network_access else "restricted",
+            }
+        return {
+            "type": "readOnly",
+            "networkAccess": bool(network_access),
+        }
+
     def _open_thread(
         self,
         *,
@@ -223,30 +268,63 @@ class CodexAppServerClient:
                 "approvalsReviewer": approvals_reviewer,
                 "sandbox": sandbox,
             }
-            try:
-                result = self._request(
-                    "thread/resume",
-                    resume_params,
-                    deadline=deadline,
-                    should_cancel=should_cancel,
-                )
-                LOGGER.info("resumed Codex App thread %s", resume_thread_id)
-                return result, True
-            except CodexAppServerError as exc:
-                if self._thread_resume_error_is_archived(exc):
+            for attempt in range(len(_THREAD_BUSY_RETRY_DELAYS) + 1):
+                try:
+                    result = self._request(
+                        "thread/resume",
+                        resume_params,
+                        deadline=deadline,
+                        should_cancel=should_cancel,
+                    )
                     LOGGER.info(
-                        "Codex App thread %s is archived; preserving the archive and "
-                        "starting a new thread",
+                        "resumed Codex App thread %s after %s attempt(s)",
                         resume_thread_id,
+                        attempt + 1,
                     )
-                elif not self._thread_resume_error_allows_new_thread(exc):
+                    return result, True
+                except (CodexAppServerCancelled, CodexAppServerTimeout):
                     raise
-                else:
-                    LOGGER.warning(
-                        "cannot resume Codex App thread %s; starting a replacement thread: %s",
-                        resume_thread_id,
-                        exc,
-                    )
+                except CodexAppServerError as exc:
+                    if self._thread_resume_error_is_busy(exc):
+                        if attempt >= len(_THREAD_BUSY_RETRY_DELAYS):
+                            LOGGER.warning(
+                                "Codex App thread %s remains owned by another active "
+                                "writer; starting a replacement thread after %s attempts",
+                                resume_thread_id,
+                                attempt + 1,
+                            )
+                            break
+                        delay = _THREAD_BUSY_RETRY_DELAYS[attempt]
+                        if should_cancel and should_cancel():
+                            raise CodexAppServerCancelled("任务已取消")
+                        if deadline - time.monotonic() <= delay:
+                            raise CodexAppServerTimeout("任务超时") from exc
+                        LOGGER.warning(
+                            "Codex App thread %s still has an active writer; "
+                            "retrying thread/resume in %.1fs (attempt %s/%s)",
+                            resume_thread_id,
+                            delay,
+                            attempt + 1,
+                            len(_THREAD_BUSY_RETRY_DELAYS) + 1,
+                        )
+                        time.sleep(delay)
+                        continue
+                    if self._thread_resume_error_is_archived(exc):
+                        LOGGER.info(
+                            "Codex App thread %s is archived; preserving the archive and "
+                            "starting a new thread",
+                            resume_thread_id,
+                        )
+                    elif not self._thread_resume_error_allows_new_thread(exc):
+                        raise
+                    else:
+                        LOGGER.warning(
+                            "cannot resume Codex App thread %s; "
+                            "starting a replacement thread: %s",
+                            resume_thread_id,
+                            exc,
+                        )
+                    break
 
         result = self._request(
             "thread/start",
@@ -270,6 +348,12 @@ class CodexAppServerClient:
         return thread_or_session_context and (
             " is archived" in message or "archived session" in message
         )
+
+    @staticmethod
+    def _thread_resume_error_is_busy(exc: CodexAppServerError) -> bool:
+        message = str(exc).lower()
+        thread_or_session_context = "thread" in message or "session" in message
+        return thread_or_session_context and "already has an active writer" in message
 
     @staticmethod
     def _thread_resume_error_allows_new_thread(exc: CodexAppServerError) -> bool:
@@ -505,11 +589,67 @@ class CodexAppServerClient:
         deadline: float,
         should_cancel: Callable[[], bool] | None,
     ) -> None:
+        next_status_poll = min(deadline, time.monotonic() + _TURN_STATUS_POLL_SECONDS)
         while not self._turn_completed:
-            event = self._next_event(deadline=deadline, should_cancel=should_cancel)
+            try:
+                event = self._next_event(
+                    deadline=next_status_poll,
+                    should_cancel=should_cancel,
+                )
+            except CodexAppServerTimeout:
+                if time.monotonic() >= deadline:
+                    raise
+                self._refresh_persisted_turn_status(
+                    deadline=min(deadline, time.monotonic() + 5.0),
+                    should_cancel=should_cancel,
+                )
+                next_status_poll = min(deadline, time.monotonic() + _TURN_STATUS_POLL_SECONDS)
+                continue
             if event is None:
                 raise CodexAppServerError("Codex app-server 在 turn 完成前退出")
             self._handle_event(event)
+
+    def _refresh_persisted_turn_status(
+        self,
+        *,
+        deadline: float,
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        if not self._thread_id or not self._turn_id:
+            return
+        result = self._request(
+            "thread/turns/list",
+            {
+                "threadId": self._thread_id,
+                "limit": 1,
+                "sortDirection": "desc",
+                "itemsView": "notLoaded",
+            },
+            deadline=deadline,
+            should_cancel=should_cancel,
+        )
+        turns = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(turns, list):
+            return
+        for turn in turns:
+            if not isinstance(turn, dict) or turn.get("id") != self._turn_id:
+                continue
+            status = turn.get("status")
+            if not isinstance(status, str) or status == "inProgress":
+                return
+            self._turn_status = status
+            error = turn.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                self._turn_error = error["message"]
+            elif status == "interrupted":
+                self._turn_error = "Codex turn 已在 App 中中断"
+            self._turn_completed = True
+            LOGGER.warning(
+                "reconciled Codex App turn %s from persisted status: %s",
+                self._turn_id,
+                status,
+            )
+            return
 
     def _next_event(
         self,

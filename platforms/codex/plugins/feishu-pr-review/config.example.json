@@ -32,6 +32,7 @@
   "codex_app_server_transport": "shared_unix",
   "codex_app_server_socket": "~/.codex/app-server-control/app-server-control.sock",
   "codex_sandbox": "read-only",
+  "codex_network_access": true,
   "codex_approval_policy": "on-request",
   "codex_approvals_reviewer": "auto_review",
   "max_concurrent_jobs": 4,

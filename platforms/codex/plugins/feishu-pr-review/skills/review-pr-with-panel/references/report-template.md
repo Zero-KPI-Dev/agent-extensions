@@ -14,10 +14,11 @@ Leader 必须按以下固定顺序生成一份最终 Markdown 报告。A/B 的 J
 - 保留所有章节；没有内容时写 `无`、`无有效 finding` 或规定的状态值，不要删除章节。
 - 每个 finding 使用稳定的 `finding_id`，复检只更新状态和 revision，不改成新的 ID。
 - 事实与推断分开标注；位置优先使用指向当前 head 的 GitHub permalink。
+- 每个新 actionable finding 必须显示 `INTRODUCED`、`WORSENED` 或 `CONTRACT_INCOMPLETE` 归因，以及 base/head 行为差异和当前 diff 的 causal hunk；仅被触达或顺带发现的既有问题不进入报告。
 - `NO_ACTIONABLE_FINDINGS` 不等于绝对无缺陷，必须说明覆盖范围和局限。
 - 面向用户或调用方的严重级别总数只统计当前仍需行动的开放 finding；`FIXED_VERIFIED`、`OBSOLETE` 等历史关闭项保留原级别时必须另列为“历史已验证修复”。`FIX_VERIFIED` 和 `NO_ACTIONABLE_FINDINGS` 的当前待处理数量必须全部为 0。
 - `INITIAL_REVIEW` 使用完整模板。`FIX_VERIFICATION` 和 `INCREMENTAL_REREVIEW` 默认使用后文的复检紧凑模板；只展开未关闭、证据不足或通过 High/Critical 新增意见门禁的项目，不复述旧 finding 全文。
-- 复检的 `publish_status` 不能只由 actionable finding 数量决定。若 GitHub 最近发布的 lifecycle 与本轮不同，尤其从非终态迁移为 `FIXED_VERIFIED`，应记录为 `PUBLISHED` 或真实的 `FAILED`；只有状态未变化、同一 `review_id` 已发布或 `NO_NEW_REVISION` 时才记录 `SKIPPED`。
+- 复检的 `publish_status` 先取决于授权和实际执行。没有有效发布授权或用户要求 report-only 时记录 `NOT_ATTEMPTED`，交付完整评审。授权有效时，不能只由 actionable finding 数量决定是否发布：GitHub 最近发布的 lifecycle 与本轮不同，尤其迁移为 `FIXED_VERIFIED` 时，应记录为 `PUBLISHED` 或真实的 `FAILED`；状态未变化、同一 `review_id` 已发布或 `NO_NEW_REVISION` 时记录 `SKIPPED`。
 
 ## 状态值
 
@@ -84,6 +85,7 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 | 当前状态 | `{{OPEN | FIXED_VERIFIED | PARTIALLY_FIXED | NOT_FIXED | UNVERIFIABLE | OBSOLETE | FINAL_BY_A | DISPUTED}}` |
 | Revision | `{{revision}}` |
 | 位置 | [`{{path}}:{{line}}`]({{github_permalink}}) |
+| 变更归因 | `{{INTRODUCED | WORSENED | CONTRACT_INCOMPLETE}}` |
 | 置信度 | `{{high | medium | low}}` |
 
 **结论**
@@ -94,6 +96,13 @@ publish_status: {{NOT_ATTEMPTED | PUBLISHED | FAILED | SKIPPED}}
 
 - `[FACT]` {{可以直接从代码、测试、配置或日志确认的事实。}}
 - `[FACT]` {{第二条事实；没有则删除该行。}}
+
+**PR 归因证据**
+
+- Base 行为：{{base 中同一路径的可观察行为。}}
+- Head 行为：{{当前 head 的新增或恶化行为。}}
+- 因果 hunk：[`{{changed_path}}:{{changed_line}}`]({{github_diff_permalink}}) — {{该变更如何建立因果关系。}}
+- Scope obligation：{{仅 CONTRACT_INCOMPLETE 必填；否则写“不适用”。}}
 
 **推断与影响**
 

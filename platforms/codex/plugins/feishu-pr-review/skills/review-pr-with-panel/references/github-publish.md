@@ -2,12 +2,16 @@
 
 ## 触发条件
 
-当用户输入包含可解析的 GitHub Pull Request URL，且没有明确表示“只输出报告”“不要发布”“不要写 GitHub”时，将本次运行的 `publish_policy` 设为 `AUTO_AFTER_PANEL_DECISION`。不需要用户再发送“发布”命令。历史记录中的 `AUTO_AFTER_CONSENSUS` 仅作为兼容值读取。
+先完成评审和可发布报告。仅当 GitHub PR 目标可解析、用户或已明确授权的网关流程允许向该 PR 发布，且用户未要求只读/仅报告时，将 `publish_policy` 设为 `AUTO_AFTER_PANEL_DECISION`。已有有效发布授权不要求用户再发送“发布”命令；仅提供 PR URL 或请求评审，不自动构成发布授权。历史记录中的 `AUTO_AFTER_CONSENSUS` 仅作为兼容值读取。
+
+没有发布授权时，使用 `publish_policy=REPORT_ONLY` 和 `publish_status=NOT_ATTEMPTED`，交付完整报告并仅为发布动作请求批准；用户明确要求 report-only 时不再询问发布。获得批准后再更新策略并发布。网关流程的发布授权必须来自用户明确启用的配置或指令，不能仅凭本 Skill 的自动发布措辞推定。
+
+下文关于 lifecycle 更新的“必须发布”和发布优先级，均以发布授权有效为前提；它们不得覆盖用户的只读选择或产生新的外发权限。
 
 以下情况不触发自动发布：
 
 - URL 不是 GitHub PR URL，或仓库/PR 号无法解析；
-- 用户明确选择只读或仅输出报告；
+- 用户明确选择只读或仅输出报告，或尚无有效的目标 PR 发布授权；
 - GitHub 连接器不可用、未授权或目标无法确认；
 - 结论只有 `DISPUTED` 或证据不足，且没有任何需要同步到 GitHub 的 finding 生命周期变化；
 - 当前模式为 `NO_NEW_REVISION`，或 GitHub 已记录相同 head、相同 finding lifecycle 状态，且没有新的共识或 A 终审确认的 actionable finding。
@@ -16,7 +20,7 @@
 
 ### 复检生命周期发布优先级
 
-按以下顺序裁决，前项优先于后项：
+先核实有效发布授权，再按以下顺序裁决，前项优先于后项：
 
 1. GitHub 最近一份机器可读 review 与本轮 finding lifecycle 不同：发布新的 `COMMENT` review body，沿用稳定 finding ID，记录本轮 `review_id` 和 current head；旧 finding 不新增 inline。
 2. 非终态迁移为 `FIXED_VERIFIED`：属于必须发布的 lifecycle 终态更新，优先级高于“没有 actionable finding”。
@@ -25,13 +29,14 @@
 
 ## 发布前检查
 
-1. 解析 `owner/repo`、PR number 和当前 head SHA。
+1. 核实当前目标 PR 的有效发布授权及用户未撤回发布意图，然后解析 `owner/repo`、PR number 和当前 head SHA。
 2. 读取 PR 元数据和当前 diff；inline 位置必须以当前 PR diff 为准。
 3. 生成 `references/report-template.md` 规定的完整 Markdown 报告。
 4. 用 `review_id` 和隐藏元数据标识检查该 run 是否已经发布，避免重复评论。
 5. 复检先比较 GitHub 最近一份机器可读 review 与本轮 finding lifecycle；有状态变化时按上述优先级发布 review body，不能只检查 actionable finding 数量。
-6. 发布已经达到共识的 finding，以及满足下述门禁的 `FINAL_BY_A` 的 A-owned actionable finding；`DISPUTED`、`DISPUTED_OPEN`（分别为 finding-level 与顶层报告状态）、`INSUFFICIENT_EVIDENCE` 和 `CLOSED_REJECTED` 都不作为 actionable inline comment 发布。
-7. 不得把旧意见的重述或生命周期更新再次发布为 inline comment。
+6. 对每个新 finding 独立检查 `change_attribution`：必须为 `INTRODUCED`、`WORSENED` 或具备具体 scope obligation 的 `CONTRACT_INCOMPLETE`，且至少一个 causal hunk 属于当前 diff。`PRE_EXISTING`、`TOUCHED_ONLY`、`ATTRIBUTION_UNCLEAR` 或缺少 base/head 行为差异时，即使 A/B 共识也不得发布。
+7. 发布已经达到共识的 finding，以及满足下述门禁的 `FINAL_BY_A` 的 A-owned actionable finding；`DISPUTED`、`DISPUTED_OPEN`（分别为 finding-level 与顶层报告状态）、`INSUFFICIENT_EVIDENCE` 和 `CLOSED_REJECTED` 都不作为 actionable inline comment 发布。
+8. 不得把旧意见的重述或生命周期更新再次发布为 inline comment。
 
 ### `FINAL_BY_A` 发布门禁
 
@@ -52,6 +57,7 @@ B 的 supplementary finding 被 A 以证据驳回时标记 `CLOSED_REJECTED`，�
 对每个 finding 采用以下规则：
 
 - finding 能绑定到当前 PR diff 中的新增或修改行，且有明确 `path`、`line`、`side=RIGHT`：放入 `file_comments`，发布为 inline comment。
+- finding 的症状位置即使在当前 diff 中，也不能代替 `change_attribution.causal_hunks`；找不到造成新增、恶化或承诺未完成的当前变更时不得发布。
 - finding 跨文件、针对整体行为、无法绑定到当前 diff 行，或 GitHub 拒绝该位置：放入 review body 的 `## 非 inline Finding` 章节。
 - inline comment 使用稳定的 `review_id` 和 `finding_id`，包含严重级别、结论、事实证据、影响和修复方向；不要只发布一句模糊的“这里有问题”。
 - `FINAL_BY_A` inline 除上述内容外，还必须披露 B 的异议并明确说明这是 A 终审结论而非 A/B 共识。

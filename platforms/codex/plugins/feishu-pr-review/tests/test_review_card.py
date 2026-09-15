@@ -93,6 +93,65 @@ GitHub 发布: 已发布
         self.assertIn("🟠 发现 1 个问题（含 High）", content)
         self.assertIn("存在 A 终审确认的待处理问题", content)
 
+    def test_bold_markdown_fields_and_counts_are_parsed(self) -> None:
+        report = """- **PR**：[EchoMem #486](https://github.com/tech-innovation-group/EchoMem/pull/486)
+- **review_id**：`R-20260906-012859-69a53c773153`
+- **mode**：`INCREMENTAL_REREVIEW`（首检后 PR 更新，已追加复核）
+- **结论**：`ACTION_REQUIRED`。Leader 与独立 A/B 完成检视，共识确认 1 项待处理问题。
+- **当前待处理数量**：Critical **0** / High **0** / Medium **1** / Low **0** / Suggestion **0**
+- **主要发现摘要**：F-001：认证帮助链接仍指向无效说明。
+- **GitHub 发布状态**：已发布 COMMENT review，含 1 条行内意见。
+- **未发布或阻塞原因**：无。
+"""
+
+        card = build_review_card(report, pr_url=self.pr_url)
+
+        self.assertEqual(card["header"]["template"], "yellow")
+        self.assertEqual(card["header"]["title"]["content"], "🟡 发现 1 个问题（最高 Medium）")
+        content = self.card_text(card)
+        self.assertIn("R-20260906-012859-69a53c773153", content)
+        self.assertIn("🟡 **Medium** 1", content)
+        self.assertNotIn("摘要未提供严重级别统计", content)
+
+    def test_sectioned_report_table_and_publish_failure_are_parsed(self) -> None:
+        report = """## 检视结论
+
+- PR：[tech-innovation-group/echomem#542](https://github.com/tech-innovation-group/echomem/pull/542)
+- review_id：`R-20260915-074340-2ea8368c1a47`
+- mode：`INITIAL_REVIEW`
+- 结论：`ACTION_REQUIRED`。发现 4 项 High、2 项 Medium。
+
+## 当前待处理发现
+
+| Critical | High | Medium | Low | Suggestion |
+|---:|---:|---:|---:|---:|
+| 0 | 4 | 2 | 0 | 0 |
+
+主要发现：
+1. **High**：第一个问题。
+
+## GitHub 发布状态
+
+- 状态：`FAILED`
+- 已发布：0 条行内意见，0 条 review body
+- 未发布或阻塞原因：目标任务没有可用的发布通道。
+
+## 检视范围与限制
+- 只读检视。
+"""
+
+        card = build_review_card(report, pr_url=self.pr_url)
+
+        self.assertEqual(card["header"]["template"], "orange")
+        self.assertEqual(card["header"]["title"]["content"], "🟠 发现 6 个问题（含 High）")
+        content = self.card_text(card)
+        self.assertIn("🟠 **High** 4", content)
+        self.assertIn("🟡 **Medium** 2", content)
+        self.assertIn("**状态**\\u3000发布失败", content)
+        self.assertIn("目标任务没有可用的发布通道", content)
+        self.assertNotIn("## GitHub 发布状态", content)
+        self.assertNotIn("摘要未提供严重级别统计", content)
+
     def test_fix_verified_history_is_not_treated_as_actionable(self) -> None:
         report = """- PR：https://github.com/tech-innovation-group/echomem/pull/365
 - review_id：`R-20260820-144240-824903decaba`
