@@ -39,9 +39,12 @@ from .feishu import (
     notification_mention_text,
     parse_event,
     review_conclusion,
+    review_incomplete_reason,
 )
+from .github_review_verification import verify_reported_publication
 from .long_connection import LongConnectionManager
 from .resource_health import app_server_resource_status
+from .review_checkout import ReviewCheckoutError, prepare_review_checkout
 
 
 LOGGER = logging.getLogger("feishu-pr-review")
@@ -344,6 +347,7 @@ class ReviewWorker(threading.Thread):
         text: str,
         *,
         pr_url: str | None = None,
+        job_id: str | None = None,
         bot_key: str | None = None,
         github_author: str | None = None,
     ) -> str:
@@ -370,6 +374,8 @@ class ReviewWorker(threading.Thread):
             github_author,
             mention_kind=mention_kind,
         )
+        if job_id:
+            fallback_text = f"任务 ID: {job_id[:8]}\n\n{fallback_text}"
         if client is None:
             return "failed: bot configuration is missing or disabled"
         try:
@@ -380,6 +386,7 @@ class ReviewWorker(threading.Thread):
                         text,
                         config.max_feishu_text_length,
                         pr_url=pr_url,
+                        job_id=job_id,
                         mention_open_ids=mention_open_ids,
                         mention_kind=mention_kind,
                         github_author=github_author,
@@ -404,6 +411,7 @@ class ReviewWorker(threading.Thread):
                 job.get("chat_id"),
                 text,
                 pr_url=job.get("pr_url"),
+                job_id=job.get("job_id"),
                 bot_key=job.get("bot_key"),
                 github_author=github_author,
             )
@@ -412,6 +420,7 @@ class ReviewWorker(threading.Thread):
                 target["chat_id"],
                 text,
                 pr_url=job.get("pr_url"),
+                job_id=job.get("job_id"),
                 bot_key=target["bot_key"],
                 github_author=github_author,
             )
@@ -460,7 +469,7 @@ class ReviewWorker(threading.Thread):
             delivery_status=delivery,
         )
 
-    def _prompt(self, job: dict[str, Any], pr: GitHubPrMetadata) -> str:
+    def _prompt(self, job: dict[str, Any], pr: GitHubPrMetadata, review_root: Path) -> str:
         config = self.config_provider()
         return f"""你正在执行一个由飞书机器人触发的 GitHub PR 检视任务。
 
@@ -480,14 +489,15 @@ Skill 名称：review-pr-with-panel
 - author：{pr.author or 'UNKNOWN'}
 - base：{pr.base_ref}@{pr.base_sha}
 - head：{pr.head_ref}@{pr.head_sha}
+- 已校验的本轮工作目录：{review_root}
 
-以上 base/head 是本轮唯一允许检视的代码范围。必须再次读取 GitHub 当前元数据确认 head 未变化，然后严格检视 `{pr.base_sha}...{pr.head_sha}`。不得根据本地邻近分支、提交时间、分支名称相似度或其他 PR 会话猜测 base/head；若精确对象缺失或 GitHub 无法确认，立即报告目标解析失败，不得改审其他分支。
+网关已在本轮工作目录验证这两个精确 Git commit 对象均可解析；若配置仓库缺失对象，工作目录是独立的缓存检出，不会改动用户现有工作区。以上 base/head 是本轮唯一允许检视的代码范围。必须再次读取 GitHub 当前元数据确认 head 未变化，然后严格检视 `{pr.base_sha}...{pr.head_sha}`。不得根据本地邻近分支、提交时间、分支名称相似度或其他 PR 会话猜测 base/head；若运行时精确对象失效或 GitHub 无法确认，立即报告目标解析失败，不得改审其他分支。
 
 请严格执行该 Skill 的完整流程：根据当前 PR 状态选择正确的 review mode，使用 Leader 加两个独立的 A/B 验证代理，保持只读，不实现修复。
 
 这不是 report-only 请求。对于有效的 GitHub PR URL，请遵循 Skill 的 GitHub 发布规则：共识或 A 终审确认的可行动检视意见应发布到 GitHub PR；`FINAL_BY_A` 意见必须披露 B 异议。能定位到当前 diff 行时发布行内意见，否则发布到 review body。不要自动 approve、request changes 或关闭线程。若已经存在历史检视结果，请按 Skill 的 finding lineage 与 follow-up 规则避免重复意见。
 
-任务结束时，请返回适合飞书回传的中文摘要。以下字段必须逐项明确给出：PR、review_id、mode（精确使用 INITIAL_REVIEW、FIX_VERIFICATION、INCREMENTAL_REREVIEW 或 NO_NEW_REVISION）、结论、当前待处理发现数量（按 Critical/High/Medium/Low/Suggestion 分级）、主要发现摘要、GitHub 发布状态、未发布或阻塞原因（如有）。发现数量只能统计当前仍需行动的开放 finding；`FIX_VERIFIED` 和 `NO_ACTIONABLE_FINDINGS` 的当前待处理数量必须全部为 0。历史 finding 即使保留原严重级别，也必须另列为“历史已验证修复”，不得计入当前待处理发现数量。即使某项为空或数量为 0 也不要省略；不要只返回“已完成”。"""
+任务结束时，请返回适合飞书回传的中文摘要。以下字段必须逐项明确给出：PR、review_id、mode（精确使用 INITIAL_REVIEW、FIX_VERIFICATION、INCREMENTAL_REREVIEW 或 NO_NEW_REVISION）、结论、当前待处理发现数量（按 Critical/High/Medium/Low/Suggestion 分级）、主要发现摘要、GitHub 发布状态、未发布或阻塞原因（如有）。发现数量只能统计当前仍需行动的开放 finding；`FIX_VERIFIED` 和 `NO_ACTIONABLE_FINDINGS` 的当前待处理数量必须全部为 0。历史 finding 即使保留原严重级别，也必须另列为“历史已验证修复”，不得计入当前待处理发现数量。即使某项为空或数量为 0 也不要省略；不要只返回“已完成”。若未进入 diff 检视/A-B 验证，结论明确写“目标解析失败”，当前发现数量逐项写“未核验”，不得把历史数量当成本轮发现。若是 NO_NEW_REVISION，明确说“没有新提交，本轮未重新检视、未重复发布”，并提供上次已发布 review 的链接。"""
 
     def execute(self, job: dict[str, Any]) -> None:
         job_id = job["job_id"]
@@ -511,6 +521,15 @@ Skill 名称：review-pr-with-panel
                 "无法从 GitHub 实时确认 PR 的 base/head，任务已在启动 Codex 前停止；不会从本地分支猜测检视目标。",
             )
             return
+        try:
+            review_root = prepare_review_checkout(
+                pr_metadata,
+                repo_root,
+                config.state_dir / "review-checkouts",
+            )
+        except ReviewCheckoutError as exc:
+            self._finish_failure(job, f"精确 PR 代码准备失败：{exc}。本轮未执行检视，也未发布 GitHub 评论。")
+            return
 
         executable = resolve_executable(config.codex_binary) or config.codex_binary
         env = os.environ.copy()
@@ -522,11 +541,11 @@ Skill 名称：review-pr-with-panel
         env["FEISHU_REVIEW_PR_URL"] = job["pr_url"]
 
         log_path = config.log_dir / f"{job_id}.codex.log"
-        LOGGER.info("starting job %s for %s in %s", job_id, job["pr_url"], repo_root)
+        LOGGER.info("starting job %s for %s in %s", job_id, job["pr_url"], review_root)
         if config.codex_runner == "exec":
-            self._execute_with_exec(job, pr_metadata, repo_root, executable, env, log_path)
+            self._execute_with_exec(job, pr_metadata, review_root, executable, env, log_path)
             return
-        self._execute_with_app_server(job, pr_metadata, repo_root, executable, env, log_path)
+        self._execute_with_app_server(job, pr_metadata, review_root, executable, env, log_path)
 
     def _execute_with_exec(
         self,
@@ -546,7 +565,7 @@ Skill 名称：review-pr-with-panel
             "--json",
             "--sandbox",
             config.codex_sandbox,
-            self._prompt(job, pr_metadata),
+            self._prompt(job, pr_metadata, repo_root),
         ]
         try:
             process = subprocess.Popen(
@@ -594,17 +613,7 @@ Skill 名称：review-pr-with-panel
             self._finish_failure(job, "Codex 没有返回可回传的检视摘要，请查看任务日志。")
             return
 
-        github_author = self._github_author_for_delivery(job, repo_root)
-        delivery = self._send_job(job, report, github_author=github_author)
-        status = "succeeded"
-        error = None if self._delivery_succeeded(delivery) else delivery
-        self.store.finish(
-            job_id,
-            status=status,
-            result_text=report,
-            error_text=error,
-            delivery_status=delivery,
-        )
+        delivery = self._finish_report(job, report, repo_root)
         LOGGER.info("job %s completed with delivery=%s", job_id, delivery)
 
     def _execute_with_app_server(
@@ -642,7 +651,7 @@ Skill 名称：review-pr-with-panel
         try:
             result = client.run(
                 cwd=str(repo_root),
-                prompt=self._prompt(job, pr_metadata),
+                prompt=self._prompt(job, pr_metadata, repo_root),
                 sandbox=config.codex_sandbox,
                 network_access=config.codex_network_access,
                 timeout_seconds=config.job_timeout_seconds,
@@ -673,17 +682,7 @@ Skill 名称：review-pr-with-panel
             self._finish_failure(job, "Codex app-server 没有返回可回传的检视摘要，请查看任务日志。")
             return
 
-        github_author = self._github_author_for_delivery(job, repo_root)
-        delivery = self._send_job(job, result.report, github_author=github_author)
-        status = "succeeded"
-        error = None if self._delivery_succeeded(delivery) else delivery
-        self.store.finish(
-            job_id,
-            status=status,
-            result_text=result.report,
-            error_text=error,
-            delivery_status=delivery,
-        )
+        delivery = self._finish_report(job, result.report, repo_root)
         LOGGER.info(
             "job %s completed with app-server thread=%s resumed=%s delivery=%s",
             job_id,
@@ -691,6 +690,26 @@ Skill 名称：review-pr-with-panel
             result.resumed,
             delivery,
         )
+
+    def _finish_report(self, job: dict[str, Any], report: str, repo_root: Path) -> str:
+        publication = verify_reported_publication(report, str(job.get("pr_url") or ""))
+        if publication is not None:
+            if publication.confirmed:
+                report += f"\n\n- **GitHub 发布核验**：已确认。{publication.detail}：[查看 review]({publication.url})"
+            else:
+                report += f"\n\n- **GitHub 发布核验**：待确认。{publication.detail}"
+        incomplete_reason = review_incomplete_reason(report)
+        github_author = None if incomplete_reason else self._github_author_for_delivery(job, repo_root)
+        delivery = self._send_job(job, report, github_author=github_author)
+        error = incomplete_reason or (None if self._delivery_succeeded(delivery) else delivery)
+        self.store.finish(
+            job["job_id"],
+            status="failed" if incomplete_reason else "succeeded",
+            result_text=report,
+            error_text=error,
+            delivery_status=delivery,
+        )
+        return delivery
 
     @staticmethod
     def _write_log(path: Path, output: str) -> None:

@@ -299,6 +299,7 @@ class _DeliveryClient:
         _max_length: int,
         *,
         pr_url: str | None = None,
+        job_id: str | None = None,
         mention_open_id: str | None = None,
         mention_open_ids: list[str] | tuple[str, ...] | None = None,
         mention_kind: str = "author",
@@ -308,6 +309,7 @@ class _DeliveryClient:
             {
                 "chat_id": chat_id,
                 "pr_url": pr_url,
+                "job_id": job_id,
                 "mention_open_id": mention_open_id,
                 "mention_open_ids": mention_open_ids,
                 "mention_kind": mention_kind,

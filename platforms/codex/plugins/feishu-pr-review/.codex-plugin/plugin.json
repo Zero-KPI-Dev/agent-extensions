@@ -1,6 +1,6 @@
 {
   "name": "feishu-pr-review",
-  "version": "0.1.1+codex.20260915171734",
+  "version": "0.1.1+codex.20260917113907",
   "description": "\u5728\u98de\u4e66\u4e2d\u89e6\u53d1\u672c\u673a Codex \u7684\u5f02\u6b65 GitHub PR \u68c0\u89c6\uff0c\u5e76\u56de\u4f20\u7ed3\u679c\u3002",
   "author": {
     "name": "Zero-KPI-Dev"

@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 
 PR_URL_RE = re.compile(
@@ -38,6 +39,7 @@ REVIEW_CONCLUSIONS = (
     "NO_ACTIONABLE_FINDINGS",
     "ACTION_REQUIRED",
     "NO_NEW_REVISION",
+    "MERGED",
     "FAILED",
     "CANCELLED",
     "PASSED",
@@ -318,9 +320,6 @@ def _first_labeled_value(lines: list[str], pattern: str) -> str | None:
         match = expression.search(line)
         if match:
             value = match.group(1).strip()
-            code_match = re.search(r"`([^`]+)`", value)
-            if code_match:
-                value = code_match.group(1)
             value = re.split(r"\s*[（(。；;]", value, maxsplit=1)[0]
             value = _strip_card_markup(value).strip("`，,。；; ")
             if value:
@@ -344,6 +343,16 @@ def _counts_in_line(line: str) -> dict[str, int]:
 
 def _extract_counts(lines: list[str]) -> dict[str, int]:
     severities = ("Critical", "High", "Medium", "Low", "Suggestion")
+    # An explicitly unverified current result must never inherit numbers from
+    # a historical-finding line later in the report.
+    for raw_line in lines:
+        line = _clean_card_line(raw_line)
+        if re.search(r"当前(?:待处理|开放).*(?:数量|发现)", line):
+            if any(marker in line for marker in ("未核验", "未统计", "无法统计", "未知")):
+                return {}
+            current = _counts_in_line(line)
+            if current:
+                return current
     # Full review reports may render the current counts as a Markdown table:
     # ``| Critical | High | ... |`` followed by an alignment row and values.
     # Parse the columns together; scanning one line at a time cannot associate
@@ -386,6 +395,30 @@ def _extract_counts(lines: list[str]) -> dict[str, int]:
         for severity, count in _counts_in_line(line).items():
             counts.setdefault(severity, count)
     return counts
+
+
+def _current_counts_unverified(lines: list[str]) -> bool:
+    return any(
+        re.search(r"当前(?:待处理|开放).*(?:数量|发现)", _clean_card_line(line))
+        and any(marker in line for marker in ("未核验", "未统计", "无法统计", "未知"))
+        for line in lines
+    )
+
+
+def _published_review_url(report: str, pr_url: str | None) -> str:
+    if not pr_url:
+        return ""
+    target = urlparse(pr_url)
+    target_path = target.path.rstrip("/").lower()
+    for candidate in re.findall(
+        r"https://github\.com/[^\s\)<>]+#pullrequestreview-\d+",
+        report,
+        flags=re.IGNORECASE,
+    ):
+        parsed = urlparse(candidate)
+        if parsed.path.rstrip("/").lower() == target_path:
+            return candidate
+    return ""
 
 
 def _first_line_containing(lines: list[str], *markers: str) -> str:
@@ -563,6 +596,7 @@ def _parse_json_report(report: str) -> dict[str, Any] | None:
 
 def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
     lines = _card_lines(report)
+    counts_unverified = _current_counts_unverified(lines)
     parsed = _parse_json_report(report)
     raw_run = parsed.get("run") if isinstance(parsed, dict) and isinstance(parsed.get("run"), dict) else parsed or {}
     raw_findings = raw_run.get("findings", []) if isinstance(raw_run, dict) else []
@@ -693,6 +727,14 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
         match = PR_URL_RE.search(report)
         pr_url = match.group(0).rstrip(".,);】") if match else None
 
+    verification_line = _first_line_containing(lines, "GitHub 发布核验")
+    if verification_line:
+        if "待确认" in verification_line:
+            publish_status = "发布未确认"
+        verification_detail = re.sub(r"^.*?GitHub\s+发布核验\s*[：:]\s*", "", verification_line, flags=re.IGNORECASE)
+        if verification_detail:
+            publish_detail = "\n".join(part for part in (publish_detail, verification_detail) if part)
+
     normalized_counts = {
         severity: counts.get(severity, 0)
         for severity in ("Critical", "High", "Medium", "Low", "Suggestion")
@@ -703,6 +745,7 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
         "mode": mode,
         "conclusion": conclusion,
         "counts": normalized_counts,
+        "counts_unverified": counts_unverified,
         "historical_counts": {
             severity: historical_counts.get(severity, 0)
             for severity in ("Critical", "High", "Medium", "Low", "Suggestion")
@@ -715,6 +758,7 @@ def _report_card_data(report: str, pr_url: str | None = None) -> dict[str, Any]:
         "new_summary": _clip_card_text(new_summary, 1000),
         "publish_status": publish_status,
         "publish_detail": _clip_card_text(publish_detail, 1200),
+        "published_review_url": _published_review_url(report, pr_url),
         "findings": [_clip_card_text(item, 1000) for item in findings[:5]],
         "other": [_clip_card_text(item, 1000) for item in other[:4]],
     }
@@ -724,6 +768,39 @@ def review_conclusion(report: str) -> str:
     """Return the normalized lifecycle conclusion used for notification routing."""
 
     return _normalize_review_conclusion(str(_report_card_data(report).get("conclusion") or ""))
+
+
+def review_incomplete_reason(report: str) -> str | None:
+    """Distinguish a completed Codex turn from a completed PR review."""
+
+    data = _report_card_data(report)
+    conclusion = str(data["conclusion"])
+    if "目标解析失败" in conclusion or (
+        data["counts_unverified"] and any(
+            marker in report for marker in ("未进入 diff 检视", "无法检视指定范围", "精确 head 对象缺失")
+        )
+    ):
+        return "目标代码范围无法检视，本轮没有产生新的检视结论或 GitHub 评论"
+    if data["publish_status"] == "发布失败":
+        return "代码检视已完成，但 GitHub 评论发布失败"
+    if data["publish_status"] == "发布未确认":
+        return "代码检视已完成，但 GitHub 上无法确认本轮 COMMENT review 已发布"
+    if _actionable_publication_unconfirmed(data):
+        return "检视发现待处理问题，但没有可确认的 GitHub 评论发布结果"
+    return None
+
+
+def _actionable_publication_unconfirmed(data: dict[str, Any]) -> bool:
+    if data["publish_status"] == "发布未确认":
+        return True
+    if str(data["mode"]).upper() == "NO_NEW_REVISION":
+        return False
+    if data["publish_status"] not in {"", "未发布"}:
+        return False
+    conclusion = _normalize_review_conclusion(str(data["conclusion"]))
+    return conclusion in {"ACTION_REQUIRED", "PARTIALLY_FIXED", "FINAL_BY_A", "DISPUTED_OPEN"} or any(
+        data["counts"].values()
+    )
 
 
 def is_merge_ready_conclusion(conclusion: str | None) -> bool:
@@ -925,6 +1002,7 @@ def build_review_card(
     pr_url: str | None = None,
     max_length: int = 3500,
     *,
+    job_id: str | None = None,
     mention_open_id: str | None = None,
     mention_open_ids: list[str] | tuple[str, ...] | None = None,
     mention_kind: str = "author",
@@ -945,6 +1023,11 @@ def build_review_card(
     is_failure = "失败" in first_line or "failed" in first_line or conclusion.upper() in {"FAILED", "FAILURE"}
     is_cancelled = "取消" in first_line or "cancel" in first_line
     mode = str(data.get("mode") or "").upper()
+    is_no_new_revision = mode == "NO_NEW_REVISION"
+    is_merged_no_new_revision = is_no_new_revision and normalized_conclusion == "MERGED"
+    is_incomplete = bool(data["counts_unverified"]) or "目标解析失败" in conclusion
+    is_publish_failed = data["publish_status"] == "发布失败"
+    is_publish_unconfirmed = _actionable_publication_unconfirmed(data)
     is_follow_up = mode in {"FIX_VERIFICATION", "INCREMENTAL_REREVIEW", "NO_NEW_REVISION"}
     counts = data["counts"]
     total_findings = sum(counts.values())
@@ -956,6 +1039,23 @@ def build_review_card(
         title, template = "❌ PR 检视失败", "red"
     elif is_cancelled:
         title, template = "⏹️ PR 检视已取消", "orange"
+    elif is_incomplete:
+        title, template = "⏸️ PR 检视未完成 · 未发布", "orange"
+    elif is_publish_failed:
+        title, template = "❌ 检视完成 · GitHub 发布失败", "red"
+    elif is_publish_unconfirmed:
+        if highest_severity == "Critical":
+            title, template = f"🔴 发现 {total_findings} 个问题（含 Critical）· 发布未确认", "red"
+        elif highest_severity == "High":
+            title, template = f"🟠 发现 {total_findings} 个问题（含 High）· 发布未确认", "orange"
+        elif normalized_conclusion == "FINAL_BY_A":
+            title, template = "⚠️ 检视发现待处理问题 · 发布未确认", "orange"
+        else:
+            title, template = "⚠️ 检视完成 · GitHub 发布未确认", "orange"
+    elif is_merged_no_new_revision:
+        title, template = "🔁 PR 已合并 · 未重复检视或发布", "blue"
+    elif is_no_new_revision:
+        title, template = "🔁 无新提交 · 未重复检视或发布", "blue"
     elif highest_severity == "Critical":
         title, template = f"🔴 发现 {total_findings} 个问题（含 Critical）", "red"
     elif highest_severity == "High":
@@ -987,6 +1087,7 @@ def build_review_card(
         pr_line = "**PR** —"
     metadata_lines = [
         pr_line,
+        *([f"**任务 ID** {job_id[:8]}"] if job_id else []),
         f"**Review ID** {data['review_id'] or '—'}",
         f"**模式** {_display_mode(str(data['mode']))}",
     ]
@@ -1012,6 +1113,27 @@ def build_review_card(
         outcome = "❌ **检视未完成，请查看下方失败原因**"
     elif is_cancelled:
         outcome = "⏹️ **检视任务已取消**"
+    elif is_incomplete:
+        outcome = "⏸️ **本轮未完成代码检视；历史问题未重新验证，也没有发布新评论。**"
+    elif is_publish_failed:
+        outcome = "❌ **检视已完成，但 GitHub 发布失败；请查看下方原因。**"
+    elif is_publish_unconfirmed:
+        if normalized_conclusion == "FINAL_BY_A":
+            outcome = "⚠️ **存在 A 终审确认的待处理问题，B 异议需披露；GitHub 发布未确认。**"
+        else:
+            outcome = "⚠️ **检视发现待处理问题，但未确认 GitHub 评论已发布。**"
+    elif is_merged_no_new_revision:
+        outcome = (
+            f"🔁 **PR 已合并；本轮未重新检视或发布。上轮记录 {total_findings} 条问题，请查看既有 review。**"
+            if total_findings
+            else "🔁 **PR 已合并；本轮未重新检视或重复发布评论。**"
+        )
+    elif is_no_new_revision:
+        outcome = (
+            f"🔁 **本轮没有新提交，未重新运行 A/B；既有 {total_findings} 条待处理意见仍有效。**"
+            if total_findings
+            else "🔁 **本轮没有新提交，未重新运行 A/B，也未重复发布评论。**"
+        )
     elif normalized_conclusion == "FINAL_BY_A":
         outcome = "⚠️ **存在 A 终审确认的待处理问题；请查看 B 异议披露**"
     elif total_findings:
@@ -1027,7 +1149,9 @@ def build_review_card(
     else:
         outcome = "✅ **未发现待处理问题**"
 
-    if (
+    if is_incomplete:
+        overview = f"{outcome}\n\n**当前问题数量**　未核验（不能沿用上轮统计）"
+    elif (
         data["history_summary"]
         or data["new_summary"]
         or any(historical_counts.values())
@@ -1043,11 +1167,12 @@ def build_review_card(
             )
         overview = "\n".join(overview_lines)
     else:
-        overview = f"{outcome}\n\n**严重级别**\n{format_counts(counts)}"
+        counts_label = "上轮问题记录" if is_merged_no_new_revision else "严重级别"
+        overview = f"{outcome}\n\n**{counts_label}**\n{format_counts(counts)}"
 
     elements: list[dict[str, Any]] = []
     normalized_open_ids = _mention_open_ids(mention_open_id, mention_open_ids)
-    if normalized_open_ids:
+    if normalized_open_ids and not is_incomplete and not is_no_new_revision:
         mentions = "　".join(f"<at id={open_id}></at>" for open_id in normalized_open_ids)
         if mention_kind == "merge_maintainers":
             if normalized_conclusion == "NO_ACTIONABLE_FINDINGS":
@@ -1064,7 +1189,11 @@ def build_review_card(
             author_label = str(github_author or "").strip().lstrip("@")
             author_label = re.sub(r"[^A-Za-z0-9_.\-\[\]]", "", author_label)
             author_suffix = f"（GitHub: `{author_label}`）" if author_label else ""
-            notification = f"{mentions}{author_suffix} PR 检视已完成，请查收。"
+            notification = (
+                f"{mentions}{author_suffix} 本轮无新提交，既有检视意见仍有效。"
+                if is_no_new_revision
+                else f"{mentions}{author_suffix} PR 检视已完成，请查收。"
+            )
         elements.extend(
             [
                 _card_div(notification),
@@ -1075,14 +1204,18 @@ def build_review_card(
 
     publish_status = data["publish_status"]
     publish_detail = data["publish_detail"]
-    if publish_status or publish_detail:
+    if publish_status or publish_detail or is_publish_unconfirmed:
         publish_line = f"**状态**　{publish_status or '未说明'}"
         if publish_detail:
             publish_line += f"\n{publish_detail}"
+        if is_publish_unconfirmed:
+            publish_line += "\n本轮没有可确认的发布结果；请查看 GitHub PR 或任务详情，不要把此卡片视为已发布。"
         elements.extend([{"tag": "hr"}, _card_div(f"**GitHub 发布**\n{publish_line}")])
 
     summary_lines = [item for item in (data["history_summary"], data["new_summary"]) if item]
-    if summary_lines:
+    if is_incomplete:
+        pass
+    elif summary_lines:
         summary_text = "**复检摘要**\n" + "\n".join(f"- {_strip_card_markup(item)}" for item in summary_lines)
         elements.extend([{"tag": "hr"}, _card_div(_clip_card_text(summary_text, max_length))])
     elif data["findings"]:
@@ -1101,6 +1234,21 @@ def build_review_card(
         if fallback:
             elements.extend([{"tag": "hr"}, _card_div(_clip_card_text(fallback, max_length))])
     if url:
+        existing_review_url = data["published_review_url"]
+        if is_no_new_revision and existing_review_url:
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "查看上次已发布的 review"},
+                            "type": "default",
+                            "url": existing_review_url,
+                        }
+                    ],
+                }
+            )
         elements.append(
             {
                 "tag": "action",
@@ -1204,6 +1352,7 @@ class FeishuClient:
         max_length: int = 3500,
         *,
         pr_url: str | None = None,
+        job_id: str | None = None,
         mention_open_id: str | None = None,
         mention_open_ids: list[str] | tuple[str, ...] | None = None,
         mention_kind: str = "author",
@@ -1215,6 +1364,7 @@ class FeishuClient:
             report,
             pr_url=pr_url,
             max_length=max_length,
+            job_id=job_id,
             mention_open_id=mention_open_id,
             mention_open_ids=mention_open_ids,
             mention_kind=mention_kind,

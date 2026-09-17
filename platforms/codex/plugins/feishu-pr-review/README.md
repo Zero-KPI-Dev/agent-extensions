@@ -6,6 +6,7 @@
 
 ## 版本说明
 
+- `0.1.1+codex.20260917113907`：受理与最终卡片显示同一任务 ID；目标 PR 的精确 base/head 不在本地时使用独立缓存检出，无法取得则明确报失败，不把旧 finding 当作本轮结果。相同版本的重复请求明确说明未重新检视、未重复发布，并可跳转到已发布 review。网关还会回读 GitHub，核对本轮声称已发布的 COMMENT review 或跳过发布所引用的既有 review；待处理问题缺少发布确认时不再标成成功。
 - `0.1.1`：长连接健康检查改为读取真实 WebSocket transport；连接持续失效时等待任务清空并由 launchd 自动恢复，作者映射等投递配置热更新不再重建 WebSocket。
 - `0.1.1`：最终检视卡片支持按机器人维护 GitHub 作者到飞书 Open ID 的映射，并自动 `@PR 作者`；未映射时安全降级为普通回传。
 - `0.1.1`：检视上下文新增分布式部署影响评估；EchoMem 运行时变更会结合当前 Router/Core、tenant ownership、共享控制面/存储及滚动升级边界，由 A/B 独立检查跨副本风险。
@@ -20,6 +21,8 @@
 - 完整的 `review-pr-with-panel` Skill 已打包在 `skills/review-pr-with-panel/`，包含运行脚本和全部检视规则，不依赖用户目录下另行安装的 Skill。
 - 每个 PR 首次检视时创建一个 Codex thread，后续检视/复检优先通过 `thread/resume` 在同一 task 中追加 turn，任务状态持续记录同一个 `codex_thread_id`。如果用户已手动归档旧 task，网关会保留其归档状态并为新请求创建新 task，不会自动 `unarchive`；旧 task 已删除、rollout 不存在或会话元数据无法读取时也会创建替代 thread。飞书只收到受理消息和最终检视结果，不接收中间进度。
 - 网关和 MCP 共享 `~/Library/Application Support/Codex/feishu-pr-review/state.sqlite3`，后台任务不会因为飞书聊天窗口关闭而丢失。
+- 本地仓库缺少 PR 的精确提交时，网关会在 `state_dir/review-checkouts/` 创建独立检出，不修改配置仓库或用户工作区；无法取得精确提交时任务失败，不会把历史问题算作本轮检视。
+- 收到任务时先发带任务 ID 的受理卡片，结束时再发同一任务 ID 的结果卡片。`NO_NEW_REVISION` 表示本轮没有新提交、没有再次运行 A/B 或重复发布，可从卡片跳转到已确认存在的 GitHub review。声称新发布的 COMMENT review 会按本轮 review_id 回读核对；若有待处理问题但发布状态未确认，任务标记失败并明确提示，不会把卡片当成已发布的证据。核对失败不会盲目重发，以免产生重复评论。
 
 ## 1. 创建配置
 

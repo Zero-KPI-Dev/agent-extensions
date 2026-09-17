@@ -71,7 +71,7 @@ GitHub 发布: 已发布
         card = build_review_card(report, pr_url=self.pr_url)
 
         self.assertEqual(card["header"]["template"], "orange")
-        self.assertEqual(card["header"]["title"]["content"], "⚠️ 检视发现待处理问题")
+        self.assertEqual(card["header"]["title"]["content"], "⚠️ 检视发现待处理问题 · 发布未确认")
         content = self.card_text(card)
         self.assertIn("FINAL_BY_A", content)
         self.assertIn("存在 A 终审确认的待处理问题", content)
@@ -90,7 +90,7 @@ GitHub 发布: 已发布
 
         content = self.card_text(card)
         self.assertEqual(card["header"]["template"], "orange")
-        self.assertIn("🟠 发现 1 个问题（含 High）", content)
+        self.assertIn("🟠 发现 1 个问题（含 High）· 发布未确认", content)
         self.assertIn("存在 A 终审确认的待处理问题", content)
 
     def test_bold_markdown_fields_and_counts_are_parsed(self) -> None:
@@ -142,8 +142,8 @@ GitHub 发布: 已发布
 
         card = build_review_card(report, pr_url=self.pr_url)
 
-        self.assertEqual(card["header"]["template"], "orange")
-        self.assertEqual(card["header"]["title"]["content"], "🟠 发现 6 个问题（含 High）")
+        self.assertEqual(card["header"]["template"], "red")
+        self.assertEqual(card["header"]["title"]["content"], "❌ 检视完成 · GitHub 发布失败")
         content = self.card_text(card)
         self.assertIn("🟠 **High** 4", content)
         self.assertIn("🟡 **Medium** 2", content)
@@ -214,6 +214,73 @@ GitHub 发布: 已发布
         self.assertEqual(card["header"]["template"], "red")
         self.assertEqual(card["header"]["title"]["content"], "❌ PR 检视失败")
         self.assertIn("检视未完成", self.card_text(card))
+
+    def test_missing_exact_head_is_not_presented_as_new_findings(self) -> None:
+        report = """- **PR**：[EchoMem #514](https://github.com/tech-innovation-group/EchoMem/pull/514)
+- **review_id**：未创建。
+- **mode**：INCREMENTAL_REREVIEW（拟定；目标解析失败，未执行）。
+- **结论**：目标解析失败。GitHub 当前 base/head 与本轮冻结值一致，但本地缺少精确 head 对象 `b27ca90dae6280c487d7bb0827fffd71bba3dd1b`。
+- **当前待处理发现数量**：Critical：未核验；High：未核验；Medium：未核验；Low：未核验；Suggestion：未核验。
+- **主要发现摘要**：本轮未进入 diff 检视及 A/B 验证。
+- **历史已验证修复**：上轮记录共 4 项（High 1、Medium 3），本轮未重新验证。
+- **GitHub 发布状态**：未发布 COMMENT review。
+- **未发布或阻塞原因**：精确 head 对象缺失。
+"""
+        card = build_review_card(report, pr_url="https://github.com/tech-innovation-group/EchoMem/pull/514")
+        content = self.card_text(card)
+
+        self.assertEqual(card["header"]["title"]["content"], "⏸️ PR 检视未完成 · 未发布")
+        self.assertIn("**结论** 目标解析失败", content)
+        self.assertIn("未核验（不能沿用上轮统计）", content)
+        self.assertNotIn("发现 4 个问题", content)
+        self.assertNotIn("**High** 1", content)
+        self.assertNotIn("**主要发现**", content)
+
+    def test_no_new_revision_links_previous_review_without_claiming_new_findings(self) -> None:
+        report = """- **PR**：[EchoMem #100](https://github.com/tech-innovation-group/EchoMem/pull/100)
+- **review_id**：`R-20260916-074327-e00e8917666d`
+- **mode**：`NO_NEW_REVISION`
+- **结论**：`NO_NEW_REVISION`。没有新提交可供复检。
+- **当前待处理发现数量**：Critical 0 / High 0 / Medium 1 / Low 0 / Suggestion 0
+- **GitHub 发布状态**：`SKIPPED`。同一 head、同一 finding 已发布于[上一轮 COMMENT review](https://github.com/tech-innovation-group/EchoMem/pull/100#pullrequestreview-5220270981)，未重复发布。
+"""
+        card = build_review_card(
+            report,
+            pr_url="https://github.com/tech-innovation-group/EchoMem/pull/100",
+            job_id="a357704dac444ed5aa1d8204d402ba0f",
+        )
+        content = self.card_text(card)
+
+        self.assertEqual(card["header"]["title"]["content"], "🔁 无新提交 · 未重复检视或发布")
+        self.assertIn("本轮没有新提交，未重新运行 A/B", content)
+        self.assertIn("**任务 ID** a357704d", content)
+        self.assertNotIn("发现 1 个问题（最高 Medium）", content)
+        self.assertIn("查看上次已发布的 review", content)
+        self.assertIn("https://github.com/tech-innovation-group/EchoMem/pull/100#pullrequestreview-5220270981", content)
+
+    def test_actionable_review_without_publication_status_is_not_shown_as_published(self) -> None:
+        report = """- **PR**：[EchoMem #542](https://github.com/tech-innovation-group/EchoMem/pull/542)
+- **mode**：INITIAL_REVIEW
+- **结论**：ACTION_REQUIRED
+- **当前待处理发现数量**：Critical 0 / High 1 / Medium 0 / Low 0
+- **GitHub 发布状态**：未说明
+"""
+        card = build_review_card(report, pr_url="https://github.com/tech-innovation-group/EchoMem/pull/542")
+        self.assertEqual(card["header"]["title"]["content"], "🟠 发现 1 个问题（含 High）· 发布未确认")
+        self.assertIn("不要把此卡片视为已发布", self.card_text(card))
+
+    def test_merged_pr_duplicate_uses_historical_label_and_does_not_mention_author(self) -> None:
+        report = """- **PR**：[EchoMem #100](https://github.com/tech-innovation-group/EchoMem/pull/100)
+- **mode**：NO_NEW_REVISION
+- **结论**：MERGED
+- **当前待处理发现数量**：Critical 0 / High 0 / Medium 1 / Low 0
+- **GitHub 发布状态**：SKIPPED，既有 review：https://github.com/tech-innovation-group/EchoMem/pull/100#pullrequestreview-5220270981
+"""
+        card = build_review_card(report, pr_url="https://github.com/tech-innovation-group/EchoMem/pull/100", mention_open_id="ou_author")
+        content = self.card_text(card)
+        self.assertEqual(card["header"]["title"]["content"], "🔁 PR 已合并 · 未重复检视或发布")
+        self.assertIn("上轮问题记录", content)
+        self.assertNotIn("<at id=ou_author>", content)
 
 
 if __name__ == "__main__":
